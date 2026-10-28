@@ -1,5 +1,7 @@
+'use client';
+
 import React, { useState } from 'react';
-import { auth, updateProfile } from '@/lib/firebase';
+import { auth, updateProfile, formatBangUsername } from '@/lib/firebase';
 import { User } from 'firebase/auth';
 
 interface ProfileModalProps {
@@ -9,7 +11,8 @@ interface ProfileModalProps {
 }
 
 export default function ProfileModal({ user, onClose, onUpdate }: ProfileModalProps) {
-  const [displayName, setDisplayName] = useState(user.displayName || '');
+  const initialClean = formatBangUsername(user).replace(/^!/, '');
+  const [handleInput, setHandleInput] = useState(initialClean);
   const [photoURL, setPhotoURL] = useState(user.photoURL || '');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -20,12 +23,14 @@ export default function ProfileModal({ user, onClose, onUpdate }: ProfileModalPr
     setLoading(true);
     setError(null);
 
+    const formattedHandle = `!${handleInput.replace(/^[!@\s]+/, '').replace(/\s+/g, '').toLowerCase()}`;
+
     try {
       await updateProfile(auth.currentUser, {
-        displayName,
+        displayName: formattedHandle,
         photoURL,
       });
-      onUpdate({ ...auth.currentUser });
+      onUpdate({ ...auth.currentUser, displayName: formattedHandle, photoURL });
       onClose();
     } catch (err: any) {
       setError(err.message || 'Failed to update profile');
@@ -35,11 +40,17 @@ export default function ProfileModal({ user, onClose, onUpdate }: ProfileModalPr
   };
 
   return (
-    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-neutral-900 border border-neutral-800 rounded-2xl max-w-md w-full p-6 shadow-2xl">
+    <div
+      onClick={onClose}
+      className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="bg-neutral-900 border border-neutral-800 rounded-2xl max-w-md w-full p-6 shadow-2xl"
+      >
         <div className="flex justify-between items-center mb-6">
-          <h2 className="text-lg font-bold text-white">Edit Profile</h2>
-          <button onClick={onClose} className="text-neutral-400 hover:text-white text-sm">✕</button>
+          <h2 className="text-lg font-extrabold text-white">Edit !Profile</h2>
+          <button onClick={onClose} className="text-neutral-400 hover:text-white text-sm cursor-pointer">✕</button>
         </div>
 
         {error && (
@@ -50,18 +61,22 @@ export default function ProfileModal({ user, onClose, onUpdate }: ProfileModalPr
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-xs font-medium text-neutral-400 mb-1">Display Username</label>
-            <input
-              type="text"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500"
-              placeholder="Enter username"
-            />
+            <label className="block text-xs font-bold text-neutral-400 mb-1">Display Handle (!username)</label>
+            <div className="flex items-center bg-neutral-950 border border-neutral-800 rounded-xl overflow-hidden focus-within:border-emerald-500">
+              <span className="pl-4 pr-1 text-sm font-extrabold text-emerald-400">!</span>
+              <input
+                type="text"
+                value={handleInput}
+                onChange={(e) => setHandleInput(e.target.value.replace(/^[!@]+/, ''))}
+                className="w-full bg-transparent px-2 py-2.5 text-sm text-white focus:outline-none"
+                placeholder="username"
+                required
+              />
+            </div>
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-neutral-400 mb-1">Profile Picture URL</label>
+            <label className="block text-xs font-bold text-neutral-400 mb-1">Profile Picture URL</label>
             <input
               type="url"
               value={photoURL}
@@ -75,16 +90,16 @@ export default function ProfileModal({ user, onClose, onUpdate }: ProfileModalPr
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs font-semibold rounded-xl transition"
+              className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs font-bold rounded-xl transition cursor-pointer"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={loading}
-              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-xl transition cursor-pointer"
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold rounded-xl transition cursor-pointer"
             >
-              {loading ? 'Saving...' : 'Save Changes'}
+              {loading ? 'Saving...' : 'Save !Handle'}
             </button>
           </div>
         </form>

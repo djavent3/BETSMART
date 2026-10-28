@@ -1,14 +1,16 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { 
-  getAuth, 
-  GoogleAuthProvider, 
-  OAuthProvider, 
-  signInWithPopup, 
+import {
+  getAuth,
+  GoogleAuthProvider,
+  OAuthProvider,
+  signInWithPopup,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
-  signInWithPhoneNumber,
   updateProfile,
-  User 
+  setPersistence,
+  inMemoryPersistence,
+  signOut,
+  User,
 } from 'firebase/auth';
 
 const firebaseConfig = {
@@ -22,17 +24,33 @@ const firebaseConfig = {
 
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 const auth = getAuth(app);
+
+// Enforce in-memory persistence so users are never automatically re-logged in on page load
+if (typeof window !== 'undefined') {
+  setPersistence(auth, inMemoryPersistence).catch((err) => {
+    console.warn('Auth persistence setup warning:', err);
+  });
+}
+
 const googleProvider = new GoogleAuthProvider();
+googleProvider.setCustomParameters({ prompt: 'select_account' });
 const appleProvider = new OAuthProvider('apple.com');
 
-export { 
-  app, 
-  auth, 
-  googleProvider, 
-  appleProvider, 
-  signInWithPopup, 
-  signInWithEmailAndPassword, 
-  createUserWithEmailAndPassword, 
-  signInWithPhoneNumber,
-  updateProfile 
+export function formatBangUsername(user: User | null): string {
+  if (!user) return '!guest';
+  const raw = user.displayName || user.email?.split('@')[0] || 'bettor';
+  const cleaned = raw.replace(/^[!@\s]+/, '').replace(/\s+/g, '').toLowerCase();
+  return `!${cleaned || 'bettor'}`;
+}
+
+export {
+  app,
+  auth,
+  googleProvider,
+  appleProvider,
+  signInWithPopup,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updateProfile,
+  signOut,
 };
