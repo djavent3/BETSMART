@@ -329,7 +329,7 @@ export default function Home() {
               onClick={() => setIsSlipOpen(true)}
               className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white text-xs font-extrabold rounded-xl transition cursor-pointer shadow-lg flex items-center gap-2"
             >
-              <span>🧾 Slip Maker ({slipPlatform})</span>
+              <span>Slipmaker</span>
               <span className="bg-white text-purple-950 px-2 py-0.5 rounded-full text-[11px] font-extrabold">
                 {slipPicks.length}
               </span>
