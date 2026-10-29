@@ -6,6 +6,7 @@ import { formatBangUsername } from '@/lib/firebase';
 
 interface ProfileModalProps {
   user: User;
+  currentHandle: string;
   currentAvatarUrl: string;
   onClose: () => void;
   onUpdate: (updatedUser: User, newAvatarUrl: string, newHandle: string) => void;
@@ -22,11 +23,12 @@ const PRESET_AVATARS = [
 
 export default function ProfileModal({
   user,
+  currentHandle,
   currentAvatarUrl,
   onClose,
   onUpdate,
 }: ProfileModalProps) {
-  const initialClean = formatBangUsername(user).replace(/^!/, '');
+  const initialClean = (currentHandle || formatBangUsername(user)).replace(/^!/, '');
   const [username, setUsername] = useState(initialClean);
   const [photoURL, setPhotoURL] = useState(currentAvatarUrl);
   const [customUrlInput, setCustomUrlInput] = useState('');
@@ -44,6 +46,7 @@ export default function ProfileModal({
     reader.onload = () => {
       if (typeof reader.result === 'string') {
         setPhotoURL(reader.result);
+        setCustomUrlInput('');
       }
     };
     reader.readAsDataURL(file);
@@ -65,16 +68,43 @@ export default function ProfileModal({
           ? customUrlInput.trim()
           : photoURL || fallbackAvatar;
 
-      // Persist in localStorage by UID & Handle so it always renders immediately
-      localStorage.setItem(`betsmart_avatar_${user.uid}`, finalAvatar);
-      localStorage.setItem(`betsmart_avatar_${formattedBang}`, finalAvatar);
-      localStorage.setItem(`betsmart_handle_${user.uid}`, formattedBang);
+      const uidKey = user.uid || user.email || formattedBang;
 
-      // Update Firebase displayName (avoid storing huge base64 strings in Firebase photoURL field)
-      await updateProfile(user, {
-        displayName: formattedBang,
-        photoURL: finalAvatar.startsWith('data:') ? fallbackAvatar : finalAvatar,
+      // 1. Save to localStorage under UID, email, handle, and active profile key
+      localStorage.setItem(`betsmart_avatar_${uidKey}`, finalAvatar);
+      localStorage.setItem(`betsmart_avatar_${formattedBang}`, finalAvatar);
+      localStorage.setItem(`betsmart_handle_${uidKey}`, formattedBang);
+      localStorage.setItem(
+        'betsmart_saved_profile',
+        JSON.stringify({
+          uid: uidKey,
+          handle: formattedBang,
+          photoURL: finalAvatar,
+        })
+      );
+
+      // 2. Persist to Backend Admin & Social Store
+      await fetch('/api/admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'save_user_preferences',
+          uid: uidKey,
+          handle: formattedBang,
+          photoURL: finalAvatar,
+          email: user.email || '',
+        }),
       });
+
+      // 3. Best-effort Firebase profile update (wrapped in its own try/catch so it never blocks saving)
+      try {
+        await updateProfile(user, {
+          displayName: formattedBang,
+          photoURL: finalAvatar.startsWith('data:') ? fallbackAvatar : finalAvatar,
+        });
+      } catch {
+        // Ignore if mock user or base64 URL
+      }
 
       onUpdate(user, finalAvatar, formattedBang);
       onClose();
@@ -109,11 +139,11 @@ export default function ProfileModal({
           </button>
         </div>
 
-        {/* Live Profile Picture Preview */}
         <div className="flex items-center gap-4 bg-neutral-950 border border-neutral-800 p-4 rounded-2xl">
           <img
             src={customUrlInput.trim() || photoURL || fallbackAvatar}
             alt="Profile Preview"
+            referrerPolicy="no-referrer"
             onError={(e) => {
               e.currentTarget.src = fallbackAvatar;
             }}
@@ -162,7 +192,6 @@ export default function ProfileModal({
             </div>
           </div>
 
-          {/* Instant Avatar Presets */}
           <div>
             <label className="block text-xs font-bold text-neutral-400 mb-1.5">
               Quick Choose Avatar Preset

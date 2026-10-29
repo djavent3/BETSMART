@@ -1,24 +1,27 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { SystemAuditRow, UserActivityRecord } from '@/app/api/admin/route';
+import {
+  SystemAuditRow,
+  UserActivityRecord,
+  TesterFeedbackItem,
+} from '@/app/api/admin/route';
 
 interface AdminDashboardProps {
   onClose?: () => void;
 }
 
 export default function AdminDashboard({ onClose }: AdminDashboardProps) {
-  // Passcode Protection State
   const [adminUnlocked, setAdminUnlocked] = useState<boolean>(false);
   const [adminCodeInput, setAdminCodeInput] = useState<string>('');
   const [authError, setAuthError] = useState<string | null>(null);
 
-  const [activeTab, setActiveTab] = useState<'audit' | 'users' | 'security'>('audit');
+  const [activeTab, setActiveTab] = useState<'audit' | 'users' | 'feedback' | 'security'>('audit');
   const [users, setUsers] = useState<UserActivityRecord[]>([]);
   const [auditRows, setAuditRows] = useState<SystemAuditRow[]>([]);
+  const [feedbackList, setFeedbackList] = useState<TesterFeedbackItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
 
-  // Site Security & Google Sheet Config
   const [siteLocked, setSiteLocked] = useState<boolean>(true);
   const [unlockCodes, setUnlockCodes] = useState<string[]>(['betsmart2026']);
   const [newUnlockCode, setNewUnlockCode] = useState<string>('');
@@ -29,11 +32,10 @@ export default function AdminDashboard({ onClose }: AdminDashboardProps) {
   const [newAdminPasscode, setNewAdminPasscode] = useState<string>('');
   const [lastSheetAutoExportAt, setLastSheetAutoExportAt] = useState<string | null>(null);
 
-  // User Log Search
   const [userSearch, setUserSearch] = useState<string>('');
 
-  // System W/L Table Filters & Date Filter (Starts 2026-10-28)
-  const [dateFilter, setDateFilter] = useState<string>('2026-10-28');
+  // Default to ALL dates (starting 2026-10-28) so DB is immediately populated on open
+  const [dateFilter, setDateFilter] = useState<string>('ALL');
   const [sportFilter, setSportFilter] = useState<'ALL' | 'NBA' | 'NFL'>('ALL');
   const [outcomeFilter, setOutcomeFilter] = useState<'ALL' | 'WIN' | 'LOSS'>('ALL');
   const [marketFilter, setMarketFilter] = useState<string>('ALL');
@@ -42,7 +44,6 @@ export default function AdminDashboard({ onClose }: AdminDashboardProps) {
   >('smartScore');
   const [sortDir, setSortDir] = useState<'desc' | 'asc'>('desc');
 
-  // Trend Table Sorting
   const [trendSortField, setTrendSortField] = useState<
     'scoreBand' | 'winRatePct' | 'totalProps' | 'avgMargin'
   >('scoreBand');
@@ -63,6 +64,7 @@ export default function AdminDashboard({ onClose }: AdminDashboardProps) {
       if (json.status === 'success') {
         setUsers(json.users || []);
         setAuditRows(json.auditRows || []);
+        setFeedbackList(json.feedbackList || []);
         if (json.siteConfig) {
           setSiteLocked(json.siteConfig.siteLocked);
           setUnlockCodes(json.siteConfig.unlockCodes || ['betsmart2026']);
@@ -275,7 +277,7 @@ export default function AdminDashboard({ onClose }: AdminDashboardProps) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `BETSMART_System_WL_Audit_${dateFilter === 'ALL' ? 'All_Dates' : dateFilter}.csv`;
+    a.download = `BETSMART_System_WL_Audit_${dateFilter === 'ALL' ? 'Since_10-28' : dateFilter}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -390,10 +392,9 @@ export default function AdminDashboard({ onClose }: AdminDashboardProps) {
     }
   };
 
-  // Passcode Lock Screen for Admin Portal
   if (!adminUnlocked) {
     return (
-      <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-8 max-w-md mx-auto my-6 shadow-2xl space-y-5 text-center">
+      <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-8 max-w-md mx-auto my-12 shadow-2xl space-y-5 text-center">
         <div className="space-y-1">
           <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-amber-500/20 text-amber-400 border border-amber-500/40">
             🔒 Restricted Admin Portal
@@ -402,7 +403,7 @@ export default function AdminDashboard({ onClose }: AdminDashboardProps) {
             Enter Admin Access Code
           </h3>
           <p className="text-xs text-neutral-400">
-            Protected system W/L database, Google Sheet sync, and site unlock code manager.
+            Protected system W/L database, tester feedback inbox, and site unlock manager.
           </p>
         </div>
 
@@ -429,7 +430,7 @@ export default function AdminDashboard({ onClose }: AdminDashboardProps) {
                 onClick={onClose}
                 className="flex-1 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs font-bold rounded-xl cursor-pointer"
               >
-                Cancel
+                Close & Reload Board
               </button>
             )}
             <button
@@ -446,7 +447,6 @@ export default function AdminDashboard({ onClose }: AdminDashboardProps) {
 
   return (
     <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-2xl space-y-6 text-neutral-100">
-      {/* Top Admin Header */}
       <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 border-b border-neutral-800 pb-4">
         <div>
           <div className="flex items-center gap-2 flex-wrap">
@@ -454,11 +454,11 @@ export default function AdminDashboard({ onClose }: AdminDashboardProps) {
               🛡️ Admin Control Center
             </span>
             <h2 className="text-xl font-extrabold text-white">
-              BETSMART System W/L Database, User Log & Site Gate
+              BETSMART System W/L Database (Since 10/28/26) & Tester Inbox
             </h2>
           </div>
           <p className="text-xs text-neutral-400 mt-1">
-            Auto-exports completed daily slates to Google Sheets • Daily Live Tracker reset at 4:00 AM EST
+            Main board is paused while Admin Portal is open • Closing reloads live board automatically
           </p>
         </div>
 
@@ -482,9 +482,9 @@ export default function AdminDashboard({ onClose }: AdminDashboardProps) {
           {onClose && (
             <button
               onClick={onClose}
-              className="w-8 h-8 rounded-full bg-neutral-800 hover:bg-neutral-700 text-neutral-300 flex items-center justify-center font-bold cursor-pointer"
+              className="px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-extrabold cursor-pointer shadow"
             >
-              ✕
+              ✕ Close & Reload Board
             </button>
           )}
         </div>
@@ -501,7 +501,7 @@ export default function AdminDashboard({ onClose }: AdminDashboardProps) {
                 : 'text-neutral-400 hover:text-white'
             }`}
           >
-            📊 System W/L Database & Trends ({ filteredAuditRows.length })
+            📊 System W/L Database ({filteredAuditRows.length})
           </button>
           <button
             onClick={() => setActiveTab('users')}
@@ -514,6 +514,16 @@ export default function AdminDashboard({ onClose }: AdminDashboardProps) {
             👥 User Log ({users.length})
           </button>
           <button
+            onClick={() => setActiveTab('feedback')}
+            className={`px-4 py-2 rounded-lg text-xs font-extrabold transition cursor-pointer ${
+              activeTab === 'feedback'
+                ? 'bg-emerald-600 text-white shadow'
+                : 'text-neutral-400 hover:text-white'
+            }`}
+          >
+            🛠️ Tester Feedback ({feedbackList.length})
+          </button>
+          <button
             onClick={() => setActiveTab('security')}
             className={`px-4 py-2 rounded-lg text-xs font-extrabold transition cursor-pointer ${
               activeTab === 'security'
@@ -521,7 +531,7 @@ export default function AdminDashboard({ onClose }: AdminDashboardProps) {
                 : 'text-neutral-400 hover:text-white'
             }`}
           >
-            🔒 Site Lock & Unlock Codes ({unlockCodes.length})
+            🔒 Site Lock & Codes ({unlockCodes.length})
           </button>
         </div>
 
@@ -531,7 +541,7 @@ export default function AdminDashboard({ onClose }: AdminDashboardProps) {
               onClick={handleManualGoogleSheetSync}
               className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold rounded-xl transition cursor-pointer shadow"
             >
-              ☁️ Sync Slate to Google Sheet Now
+              ☁️ Sync Slate to Google Sheet
             </button>
             <button
               onClick={handleExportAuditCsv}
@@ -560,23 +570,19 @@ export default function AdminDashboard({ onClose }: AdminDashboardProps) {
           Loading Admin Database...
         </div>
       ) : activeTab === 'audit' ? (
-        /* ================================================================= */
-        /* TAB 1: SYSTEM W/L DATABASE (STARTS 10/28) & SMARTSCORE TRENDS     */
-        /* ================================================================= */
         <div className="space-y-6">
-          {/* Auto-Export Status Bar */}
           <div className="bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-3 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 text-xs">
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
               <span className="text-neutral-300 font-semibold">
-                Master Google Sheet Auto-Export Status:
+                Master Google Sheet Auto-Export:
               </span>
               <strong className="text-emerald-400">
-                {lastSheetAutoExportAt || 'Waiting for final game of the night to finish'}
+                {lastSheetAutoExportAt || '2026-10-28 Slate Active'}
               </strong>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-neutral-400 font-bold">Filter by Slate Date:</span>
+              <span className="text-neutral-400 font-bold">Filter by Date:</span>
               <select
                 value={dateFilter}
                 onChange={(e) => setDateFilter(e.target.value)}
@@ -584,24 +590,23 @@ export default function AdminDashboard({ onClose }: AdminDashboardProps) {
               >
                 {availableDates.map((d) => (
                   <option key={d} value={d}>
-                    {d === 'ALL' ? 'All Dates (Since 10/28)' : `Slate: ${d}`}
+                    {d === 'ALL' ? 'All Dates (Since 10/28/26)' : `Slate: ${d}`}
                   </option>
                 ))}
               </select>
             </div>
           </div>
 
-          {/* KPI Summary Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
             <div className="bg-neutral-950 border border-neutral-800 p-4 rounded-xl">
               <p className="text-[10px] font-extrabold uppercase text-neutral-400">
-                Graded Record ({dateFilter})
+                Graded Record ({dateFilter === 'ALL' ? 'Since 10/28' : dateFilter})
               </p>
               <p className="text-2xl font-extrabold text-emerald-400 mt-1">
                 {summaryStats.wins}W - {summaryStats.losses}L ({summaryStats.winRate}%)
               </p>
               <p className="text-[11px] text-neutral-500 mt-0.5">
-                {summaryStats.total} completed props logged
+                {summaryStats.total} graded predictions in DB
               </p>
             </div>
 
@@ -750,10 +755,10 @@ export default function AdminDashboard({ onClose }: AdminDashboardProps) {
             <div className="p-4 border-b border-neutral-800 flex flex-wrap justify-between items-center gap-3">
               <div>
                 <h3 className="text-sm font-extrabold text-white">
-                  2. Detailed Parameterized System W/L Database (Starting 10/28)
+                  2. Detailed Parameterized System W/L Database (Includes 10/28 Slate)
                 </h3>
                 <p className="text-[11px] text-neutral-400">
-                  Every completed prop is automatically graded and added here once a game reaches FINAL.
+                  Click column headers (Date, SmartScore, Proj %, Pos Rank, Diff) to sort.
                 </p>
               </div>
 
@@ -889,9 +894,6 @@ export default function AdminDashboard({ onClose }: AdminDashboardProps) {
           </div>
         </div>
       ) : activeTab === 'users' ? (
-        /* ================================================================= */
-        /* TAB 2: REGISTERED USER LOG (WITH WORKING AVATAR IMAGES)           */
-        /* ================================================================= */
         <div className="space-y-4">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-neutral-950 border border-neutral-800 p-4 rounded-xl">
             <div>
@@ -934,6 +936,7 @@ export default function AdminDashboard({ onClose }: AdminDashboardProps) {
                         <img
                           src={u.photoURL}
                           alt={u.name}
+                          referrerPolicy="no-referrer"
                           onError={(e) => {
                             e.currentTarget.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(
                               u.name || 'User'
@@ -976,12 +979,63 @@ export default function AdminDashboard({ onClose }: AdminDashboardProps) {
             </div>
           )}
         </div>
+      ) : activeTab === 'feedback' ? (
+        /* ================================================================= */
+        /* TAB 3: TESTER FEEDBACK INBOX (FROM FLOATING BUTTON)               */
+        /* ================================================================= */
+        <div className="space-y-4">
+          <div className="bg-neutral-950 border border-neutral-800 p-4 rounded-xl">
+            <h3 className="text-sm font-extrabold text-white">
+              Direct Tester Feedback & Bug Reports ({feedbackList.length})
+            </h3>
+            <p className="text-[11px] text-neutral-400">
+              Submitted via the floating &ldquo;🛠️ Tester Feedback&rdquo; button in the bottom-right corner.
+            </p>
+          </div>
+
+          {feedbackList.length === 0 ? (
+            <div className="bg-neutral-950 border border-neutral-800 rounded-2xl p-10 text-center space-y-1">
+              <p className="text-sm font-bold text-white">No tester feedback messages yet</p>
+              <p className="text-xs text-neutral-400">
+                Any notes sent by your friends using the floating button will appear here immediately.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {feedbackList.map((item) => (
+                <div
+                  key={item.id}
+                  className="bg-neutral-950 border border-neutral-800 rounded-xl p-4 flex flex-col sm:flex-row justify-between items-start gap-3"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-extrabold text-emerald-400">
+                        {item.senderHandle}
+                      </span>
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-neutral-900 border border-neutral-700 text-amber-300">
+                        {item.category}
+                      </span>
+                      <span className="text-[10px] text-neutral-500">
+                        Tab: {item.pageContext}
+                      </span>
+                    </div>
+                    <p className="text-xs text-white leading-relaxed">{item.message}</p>
+                  </div>
+                  <span className="text-[10px] text-neutral-500 shrink-0">
+                    {new Date(item.createdAt).toLocaleString([], {
+                      month: 'short',
+                      day: 'numeric',
+                      hour: 'numeric',
+                      minute: '2-digit',
+                    })}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       ) : (
-        /* ================================================================= */
-        /* TAB 3: SITE LOCK, ACCEPTABLE UNLOCK CODES & GOOGLE SHEET CONFIG   */
-        /* ================================================================= */
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Site Lock & Acceptable Unlock Codes */}
           <div className="bg-neutral-950 border border-neutral-800 rounded-2xl p-5 space-y-4">
             <div className="flex justify-between items-center border-b border-neutral-800 pb-3">
               <div>
@@ -1067,7 +1121,6 @@ export default function AdminDashboard({ onClose }: AdminDashboardProps) {
             </form>
           </div>
 
-          {/* Master Google Sheet Link & Admin Passcode Config */}
           <div className="bg-neutral-950 border border-neutral-800 rounded-2xl p-5 space-y-4">
             <div className="border-b border-neutral-800 pb-3">
               <h3 className="text-sm font-extrabold text-white">

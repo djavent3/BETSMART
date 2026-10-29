@@ -74,7 +74,6 @@ const PLATFORMS_POOL = [
 function formatDateKeyEST(dateObj: Date) {
   const estStr = dateObj.toLocaleString('en-US', { timeZone: 'America/New_York' });
   const est = new Date(estStr);
-  // 4:00 AM EST daily rollover
   const rollover = new Date(est.getTime() - 4 * 60 * 60 * 1000);
   const y = rollover.getFullYear();
   const m = String(rollover.getMonth() + 1).padStart(2, '0');
@@ -93,7 +92,6 @@ function formatDateKeyEST(dateObj: Date) {
   };
 }
 
-// Deterministic hash from player ID so prop lines remain rock-solid while live stats tick
 function hashCode(str: string): number {
   let h = 0;
   for (let i = 0; i < str.length; i++) {
@@ -128,7 +126,6 @@ export async function GET() {
 
   const { slateDate, espnToday, espnTomorrow } = formatDateKeyEST(new Date());
 
-  // Fetch live Scoreboards directly from ESPN for Today's NBA, Tomorrow's Pre-Game NBA, and NFL
   const [nbaTodaySb, nbaTomSb, nflSb] = await Promise.all([
     fetchJsonWithTimeout(
       `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${espnToday}`
@@ -141,11 +138,7 @@ export async function GET() {
     ),
   ]);
 
-  const rawNbaEvents = [
-    ...(nbaTodaySb?.events || []),
-    ...(nbaTomSb?.events || []),
-  ];
-  // Deduplicate events by id
+  const rawNbaEvents = [...(nbaTodaySb?.events || []), ...(nbaTomSb?.events || [])];
   const seenEventIds = new Set<string>();
   const nbaEvents = rawNbaEvents.filter((ev: any) => {
     if (!ev?.id || seenEventIds.has(ev.id)) return false;
@@ -158,7 +151,6 @@ export async function GET() {
   const games: any[] = [];
   const dynamicProps: PlayerPropItem[] = [];
 
-  // Fetch live box-score summaries in parallel for active/completed NBA games & top NFL games
   const nbaSummariesMap: Record<string, any> = {};
   await Promise.all(
     nbaEvents.slice(0, 10).map(async (ev: any) => {
@@ -173,7 +165,7 @@ export async function GET() {
     })
   );
 
-  // Process NBA Events (Real games, real clocks, real box-score stats & leaders)
+  // Process NBA Events with Official ESPN NBA Headshot CDN URLs
   for (const ev of nbaEvents.slice(0, 12)) {
     const comp = ev?.competitions?.[0];
     if (!comp) continue;
@@ -209,7 +201,6 @@ export async function GET() {
     const summary = nbaSummariesMap[ev.id];
     const boxPlayerGroups = summary?.boxscore?.players || [];
 
-    // 1. If LIVE or FINAL and ESPN boxscore has active athlete stats, build props from real boxscore players
     let extractedCountForGame = 0;
     if ((gameStatus === 'LIVE' || gameStatus === 'FINAL') && boxPlayerGroups.length > 0) {
       for (const teamGroup of boxPlayerGroups) {
@@ -230,7 +221,6 @@ export async function GET() {
           (a: any) => !a.didNotPlay && Array.isArray(a.stats) && a.stats.length > 0
         );
 
-        // Sort athletes by live points + rebounds + assists descending to pick top stars
         const sortedAthletes = [...athletes].sort((a: any, b: any) => {
           const pA = ptsIdx >= 0 ? parseInt(a.stats[ptsIdx] || '0', 10) || 0 : 0;
           const pB = ptsIdx >= 0 ? parseInt(b.stats[ptsIdx] || '0', 10) || 0 : 0;
@@ -263,7 +253,6 @@ export async function GET() {
               ? ast
               : pts + reb + ast;
 
-          // Derive realistic pre-game line anchored to player ID so it stays fixed throughout the game
           const baselineLine =
             chosenMarket === 'Points'
               ? 18.5 + (h % 11)
@@ -290,6 +279,11 @@ export async function GET() {
           const pos = ath?.position?.abbreviation || 'G';
           const hit = liveVal > baselineLine;
 
+          // Use ESPN's official NBA headshot CDN matched to ESPN athlete IDs
+          const resolvedHeadshot =
+            ath?.headshot?.href ||
+            `https://a.espncdn.com/i/headshots/nba/players/full/${ath.id}.png`;
+
           dynamicProps.push({
             id: `espn-nba-${ev.id}-${ath.id}`,
             slateDate,
@@ -299,9 +293,7 @@ export async function GET() {
             startTime: shortDetail,
             startTimeIso,
             player: ath.displayName,
-            playerImage:
-              ath?.headshot?.href ||
-              `https://cdn.nba.com/headshots/nba/latest/1040x760/${ath.id}.png`,
+            playerImage: resolvedHeadshot,
             team: teamName,
             opponent: oppName,
             position: pos,
@@ -359,7 +351,6 @@ export async function GET() {
       }
     }
 
-    // 2. If PREGAME (or if boxscore had 0 players yet), extract from ESPN Competitor Leaders
     if (extractedCountForGame === 0) {
       for (const side of [awayComp, homeComp]) {
         const teamName = side?.team?.displayName || awayAbbr;
@@ -395,6 +386,10 @@ export async function GET() {
           const platforms = PLATFORMS_POOL[h % PLATFORMS_POOL.length];
           const pos = ath?.position?.abbreviation || 'G';
 
+          const resolvedHeadshot =
+            ath?.headshot?.href ||
+            `https://a.espncdn.com/i/headshots/nba/players/full/${ath.id}.png`;
+
           dynamicProps.push({
             id: propId,
             slateDate,
@@ -404,9 +399,7 @@ export async function GET() {
             startTime: shortDetail,
             startTimeIso,
             player: ath.displayName,
-            playerImage:
-              ath?.headshot?.href ||
-              `https://cdn.nba.com/headshots/nba/latest/1040x760/${ath.id}.png`,
+            playerImage: resolvedHeadshot,
             team: teamName,
             opponent: oppName,
             position: pos,
@@ -457,7 +450,7 @@ export async function GET() {
     }
   }
 
-  // Process NFL Events from ESPN NFL Scoreboard
+  // Process NFL Events
   for (const ev of nflEvents) {
     const comp = ev?.competitions?.[0];
     if (!comp) continue;
@@ -514,7 +507,6 @@ export async function GET() {
           ? 'Rush Yards'
           : 'Receiving Yards';
 
-        // Compute per-game average if ESPN leader value is cumulative season yardage
         const perGameAvg =
           rawVal > 400
             ? Math.round((rawVal / 8) * 10) / 10
@@ -605,7 +597,7 @@ export async function GET() {
     }
   }
 
-  // Automatically log any FINAL ESPN props into the Admin W/L Audit Database
+  // Sync any FINAL ESPN props into the Admin W/L Audit Database
   const globalForAdmin = globalThis as unknown as {
     auditRows?: SystemAuditRow[];
   };
