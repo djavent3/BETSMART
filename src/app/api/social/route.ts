@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server';
+import fs from 'fs';
+import path from 'path';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,6 +32,7 @@ export interface ChatMessage {
   channelId: string;
   senderHandle: string;
   timestamp: string;
+  timestampIso?: string;
   text?: string;
   sharedProp?: SharedPropPayload;
   sharedSlip?: SharedSlipPayload;
@@ -43,14 +46,50 @@ export interface ChatChannel {
   description?: string;
 }
 
+const SOCIAL_STORE_PATH = path.join('/tmp', 'betsmart_social_store_v2.json');
+
 const globalForSocial = globalThis as unknown as {
   channels: ChatChannel[];
   messages: ChatMessage[];
   friends: Record<string, string[]>;
-  registeredHandles: Set<string>;
+  registeredHandles: string[];
+  socialLoaded?: boolean;
 };
 
-if (!globalForSocial.channels || globalForSocial.channels.some((c) => c.id === 'dm-dave')) {
+function saveSocialStore() {
+  try {
+    fs.writeFileSync(
+      SOCIAL_STORE_PATH,
+      JSON.stringify({
+        channels: globalForSocial.channels,
+        messages: globalForSocial.messages,
+        friends: globalForSocial.friends,
+        registeredHandles: globalForSocial.registeredHandles,
+      }),
+      'utf8'
+    );
+  } catch {
+    // Ignore write errors
+  }
+}
+
+function initSocialStore() {
+  if (globalForSocial.socialLoaded) return;
+  globalForSocial.socialLoaded = true;
+
+  try {
+    if (fs.existsSync(SOCIAL_STORE_PATH)) {
+      const parsed = JSON.parse(fs.readFileSync(SOCIAL_STORE_PATH, 'utf8'));
+      globalForSocial.channels = parsed.channels || [];
+      globalForSocial.messages = parsed.messages || [];
+      globalForSocial.friends = parsed.friends || {};
+      globalForSocial.registeredHandles = parsed.registeredHandles || [];
+      return;
+    }
+  } catch {
+    // Fallback to default discussions
+  }
+
   globalForSocial.channels = [
     {
       id: 'disc-nba-cup',
@@ -73,19 +112,23 @@ if (!globalForSocial.channels || globalForSocial.channels.some((c) => c.id === '
   ];
   globalForSocial.messages = [];
   globalForSocial.friends = {};
-  globalForSocial.registeredHandles = new Set<string>();
+  globalForSocial.registeredHandles = [];
 }
 
+initSocialStore();
+
 export async function GET(request: Request) {
+  initSocialStore();
   const { searchParams } = new URL(request.url);
   const handle = searchParams.get('handle') || '';
 
-  if (handle && handle !== '!guest') {
-    globalForSocial.registeredHandles.add(handle);
+  if (handle && handle !== '!guest' && !globalForSocial.registeredHandles.includes(handle)) {
+    globalForSocial.registeredHandles.push(handle);
+    saveSocialStore();
   }
 
   const userFriends = globalForSocial.friends[handle] || [];
-  const directoryHandles = Array.from(globalForSocial.registeredHandles).filter((h) => h !== handle);
+  const directoryHandles = globalForSocial.registeredHandles.filter((h) => h !== handle);
 
   return NextResponse.json({
     status: 'success',
@@ -96,6 +139,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  initSocialStore();
   try {
     const body = await request.json();
 
@@ -108,7 +152,10 @@ export async function POST(request: Request) {
       if (friendHandle !== '!' && !globalForSocial.friends[userHandle].includes(friendHandle)) {
         globalForSocial.friends[userHandle].push(friendHandle);
       }
-      globalForSocial.registeredHandles.add(friendHandle);
+      if (!globalForSocial.registeredHandles.includes(friendHandle)) {
+        globalForSocial.registeredHandles.push(friendHandle);
+      }
+      saveSocialStore();
 
       return NextResponse.json({
         status: 'success',
@@ -139,6 +186,8 @@ export async function POST(request: Request) {
       };
 
       globalForSocial.channels.push(newChan);
+      saveSocialStore();
+
       return NextResponse.json({
         status: 'success',
         channel: newChan,
@@ -148,19 +197,25 @@ export async function POST(request: Request) {
 
     if (body.action === 'send_message') {
       const sender = body.senderHandle || '!bettor';
-      globalForSocial.registeredHandles.add(sender);
+      if (!globalForSocial.registeredHandles.includes(sender)) {
+        globalForSocial.registeredHandles.push(sender);
+      }
 
+      const now = new Date();
       const newMsg: ChatMessage = {
         id: `msg-${Date.now()}`,
         channelId: body.channelId,
         senderHandle: sender,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        timestamp: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        timestampIso: now.toISOString(),
         text: body.text || '',
         sharedProp: body.sharedProp || undefined,
         sharedSlip: body.sharedSlip || undefined,
       };
 
       globalForSocial.messages.push(newMsg);
+      saveSocialStore();
+
       return NextResponse.json({
         status: 'success',
         message: newMsg,

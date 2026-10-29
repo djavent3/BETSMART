@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { User } from 'firebase/auth';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { User, onAuthStateChanged } from 'firebase/auth';
 import { auth, signOut, formatBangUsername } from '@/lib/firebase';
 import ProfileModal from '@/components/ProfileModal';
 import AuthModal from '@/components/AuthModal';
@@ -9,6 +9,7 @@ import SlipDrawer from '@/components/SlipDrawer';
 import SocialHub from '@/components/SocialHub';
 import PasswordGate from '@/components/PasswordGate';
 import TutorialModal from '@/components/TutorialModal';
+import AdminDashboard from '@/components/AdminDashboard';
 import {
   ChatChannel,
   ChatMessage,
@@ -18,13 +19,61 @@ import {
 
 type TopCategoryType = 'NBA' | 'NFL' | 'hit-rate' | 'nba-cup' | 'nfl-primetime' | 'live-tracker';
 
+const getFallbackAvatar = (handle: string) => {
+  const clean = (handle || 'user').replace(/^[!@#\s]+/, '') || 'user';
+  return `https://ui-avatars.com/api/?name=${encodeURIComponent(
+    clean
+  )}&background=064e3b&color=34d399&bold=true&size=128`;
+};
+
+// Format ISO game start times into the viewer's local browser timezone
+const formatGameTimeInUserTz = (isoString?: string, fallback?: string): string => {
+  if (!isoString) return fallback || 'Scheduled';
+  try {
+    const date = new Date(isoString);
+    if (isNaN(date.getTime())) return fallback || 'Scheduled';
+
+    const now = new Date();
+    const isToday =
+      date.getFullYear() === now.getFullYear() &&
+      date.getMonth() === now.getMonth() &&
+      date.getDate() === now.getDate();
+
+    const timePart = date.toLocaleTimeString([], {
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZoneName: 'short',
+    });
+
+    if (isToday) return timePart;
+
+    const dayPart = date.toLocaleDateString([], {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+    });
+    return `${dayPart} • ${timePart}`;
+  } catch {
+    return fallback || 'Scheduled';
+  }
+};
+
 export default function Home() {
   const [user, setUser] = useState<User | null>(null);
+  const [customHandle, setCustomHandle] = useState<string>('');
+  const [userAvatarUrl, setUserAvatarUrl] = useState<string>('');
+  const [userAvatarsMap, setUserAvatarsMap] = useState<Record<string, string>>({});
+
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
   const [showProfileModal, setShowProfileModal] = useState<boolean>(false);
   const [showTutorialModal, setShowTutorialModal] = useState<boolean>(false);
+  const [showAdminModal, setShowAdminModal] = useState<boolean>(false);
 
-  // Top navigation
+  // Subtle Admin Logo Triple-Click Counter
+  const logoClickCountRef = useRef<number>(0);
+  const logoClickTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Top navigation (Unauthenticated users can only browse 'NBA' and 'NFL')
   const [topCategory, setTopCategory] = useState<TopCategoryType>('NBA');
 
   // Secondary filters
@@ -48,7 +97,7 @@ export default function Home() {
   const [isExpandedWindow, setIsExpandedWindow] = useState<boolean>(false);
   const [channels, setChannels] = useState<ChatChannel[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [friends, setFriends] = useState<string[]>(['!dave', '!tari', '!yella', '!noah']);
+  const [friends, setFriends] = useState<string[]>([]);
   const [activeChannelId, setActiveChannelId] = useState<string>('disc-nba-cup');
   const [pendingShareItem, setPendingShareItem] = useState<{
     prop?: SharedPropPayload;
@@ -57,19 +106,134 @@ export default function Home() {
   const [shareNote, setShareNote] = useState<string>('');
   const [targetShareChannelId, setTargetShareChannelId] = useState<string>('disc-nba-cup');
 
-  // API Data
+  // API Data & Live Engine State
   const [data, setData] = useState<any | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const [syncingLive, setSyncingLive] = useState<boolean>(false);
+  const [liveRefreshRateMs, setLiveRefreshRateMs] = useState<number>(1000);
 
-  const currentUserHandle = useMemo(() => formatBangUsername(user), [user]);
+  const currentUserHandle = useMemo(() => {
+    if (customHandle) return customHandle;
+    return formatBangUsername(user);
+  }, [user, customHandle]);
 
-  // Never auto-login cached user on mount
+  const resolvedCurrentUserAvatar = useMemo(() => {
+    if (userAvatarUrl) return userAvatarUrl;
+    if (user?.photoURL) return user.photoURL;
+    return getFallbackAvatar(currentUserHandle);
+  }, [userAvatarUrl, user, currentUserHandle]);
+
+  const localLastSyncedLabel = useMemo(() => {
+    if (!data?.lastSyncedIso) return 'Now';
+    try {
+      return new Date(data.lastSyncedIso).toLocaleTimeString([], {
+        hour: 'numeric',
+        minute: '2-digit',
+        second: '2-digit',
+        timeZoneName: 'short',
+      });
+    } catch {
+      return 'Now';
+    }
+  }, [data?.lastSyncedIso]);
+
+  // Restore Authenticated User & Per-User Preferences on Session Load
   useEffect(() => {
-    signOut(auth).catch(() => {});
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (!firebaseUser) {
+        setUser(null);
+        setCustomHandle('');
+        setUserAvatarUrl('');
+        return;
+      }
+
+      setUser(firebaseUser);
+      const uid = firebaseUser.uid;
+      const localHandle =
+        localStorage.getItem(`betsmart_handle_${uid}`) ||
+        formatBangUsername(firebaseUser);
+      const localAvatar =
+        localStorage.getItem(`betsmart_avatar_${uid}`) ||
+        localStorage.getItem(`betsmart_avatar_${localHandle}`) ||
+        firebaseUser.photoURL ||
+        getFallbackAvatar(localHandle);
+      const localLayout = localStorage.getItem(`betsmart_layout_${uid}`) as
+        | 'grid'
+        | 'compact'
+        | null;
+      const localPlatform = localStorage.getItem(`betsmart_platform_${uid}`);
+      const localSlips = localStorage.getItem(`betsmart_slips_${uid}`);
+
+      setCustomHandle(localHandle);
+      setUserAvatarUrl(localAvatar);
+      if (localLayout === 'grid' || localLayout === 'compact') {
+        setLayoutMode(localLayout);
+      }
+      if (localPlatform) {
+        setSlipPlatform(localPlatform);
+      }
+      if (localSlips) {
+        try {
+          setSlipPicks(JSON.parse(localSlips));
+        } catch {
+          // Ignore malformed JSON
+        }
+      }
+
+      // Sync with server-stored per-user profile & tutorial preferences
+      try {
+        const res = await fetch(`/api/admin?uid=${encodeURIComponent(uid)}`, {
+          cache: 'no-store',
+        });
+        const json = await res.json();
+        if (json.userPref) {
+          if (json.userPref.handle) setCustomHandle(json.userPref.handle);
+          if (json.userPref.photoURL) setUserAvatarUrl(json.userPref.photoURL);
+          if (json.userPref.layoutMode) setLayoutMode(json.userPref.layoutMode);
+          if (json.userPref.preferredPlatform) {
+            setSlipPlatform(json.userPref.preferredPlatform);
+          }
+        }
+      } catch {
+        // Fallback to localStorage preferences
+      }
+    });
+
+    return () => unsubscribe();
   }, []);
 
-  // Strict Auth Guard Helper
+  // Save Slip Picks per user whenever updated
+  useEffect(() => {
+    if (user?.uid) {
+      localStorage.setItem(`betsmart_slips_${user.uid}`, JSON.stringify(slipPicks));
+    }
+  }, [slipPicks, user]);
+
+  // Subtle Admin Access Hotkey: Ctrl + Shift + A (or Cmd + Shift + A)
+  useEffect(() => {
+    const handleSecretAdminKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        setShowAdminModal((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleSecretAdminKey);
+    return () => window.removeEventListener('keydown', handleSecretAdminKey);
+  }, []);
+
+  const handleLogoSecretClick = () => {
+    logoClickCountRef.current += 1;
+    if (logoClickTimerRef.current) clearTimeout(logoClickTimerRef.current);
+
+    if (logoClickCountRef.current >= 3) {
+      logoClickCountRef.current = 0;
+      setShowAdminModal((prev) => !prev);
+    } else {
+      logoClickTimerRef.current = setTimeout(() => {
+        logoClickCountRef.current = 0;
+      }, 650);
+    }
+  };
+
   const requireAuth = (action: () => void) => {
     if (!user) {
       setShowAuthModal(true);
@@ -78,73 +242,161 @@ export default function Home() {
     action();
   };
 
-  // Trigger Tutorial Modal after login/signup unless user opted out
-  const handleAuthSuccess = (loggedInUser: User) => {
+  const saveUserPrefsToServer = async (
+    activeUser: User,
+    updates: {
+      handle?: string;
+      photoURL?: string;
+      hideTutorial?: boolean;
+      preferredPlatform?: string;
+      layoutMode?: 'grid' | 'compact';
+    }
+  ) => {
+    try {
+      await fetch('/api/admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'save_user_preferences',
+          uid: activeUser.uid,
+          ...updates,
+        }),
+      });
+    } catch {
+      // Non-blocking
+    }
+  };
+
+  const syncUserActivityToAdmin = async (
+    activeUser: User,
+    actionLabel: string,
+    overrideAvatar?: string,
+    overrideHandle?: string
+  ) => {
+    const handle = overrideHandle || customHandle || formatBangUsername(activeUser);
+    const savedAvatar =
+      overrideAvatar ||
+      localStorage.getItem(`betsmart_avatar_${activeUser.uid}`) ||
+      localStorage.getItem(`betsmart_avatar_${handle}`) ||
+      activeUser.photoURL ||
+      getFallbackAvatar(handle);
+
+    try {
+      const res = await fetch('/api/admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'log_user_activity',
+          uid: activeUser.uid,
+          name: handle.replace(/^!/, ''),
+          handle,
+          email: activeUser.email || '',
+          photoURL: savedAvatar,
+          createdAt: activeUser.metadata?.creationTime || new Date().toISOString(),
+          lastAction: actionLabel,
+        }),
+      });
+      const json = await res.json();
+      if (json.userAvatars) {
+        setUserAvatarsMap(json.userAvatars);
+      }
+    } catch {
+      // Non-blocking
+    }
+  };
+
+  const handleAuthSuccess = async (loggedInUser: User) => {
     setUser(loggedInUser);
-    const handle = formatBangUsername(loggedInUser);
-    const hideGlobal = localStorage.getItem('betsmart_hide_tutorial') === 'true';
-    const hideForUser = localStorage.getItem(`betsmart_hide_tutorial_${handle}`) === 'true';
-    if (!hideGlobal && !hideForUser) {
+    const uid = loggedInUser.uid;
+    const storedHandle =
+      localStorage.getItem(`betsmart_handle_${uid}`) ||
+      formatBangUsername(loggedInUser);
+    const storedAvatar =
+      localStorage.getItem(`betsmart_avatar_${uid}`) ||
+      localStorage.getItem(`betsmart_avatar_${storedHandle}`) ||
+      loggedInUser.photoURL ||
+      getFallbackAvatar(storedHandle);
+
+    setCustomHandle(storedHandle);
+    setUserAvatarUrl(storedAvatar);
+    await syncUserActivityToAdmin(loggedInUser, 'Signed In to Session', storedAvatar, storedHandle);
+
+    // Check per-user tutorial dismissal (by UID and by !handle)
+    const hideByUid = localStorage.getItem(`betsmart_hide_tutorial_${uid}`) === 'true';
+    const hideByHandle = localStorage.getItem(`betsmart_hide_tutorial_${storedHandle}`) === 'true';
+    if (!hideByUid && !hideByHandle) {
       setShowTutorialModal(true);
     }
   };
 
   const handleCloseTutorial = (neverShowAgain: boolean) => {
-    if (neverShowAgain) {
-      localStorage.setItem('betsmart_hide_tutorial', 'true');
-      if (currentUserHandle) {
-        localStorage.setItem(`betsmart_hide_tutorial_${currentUserHandle}`, 'true');
-      }
+    if (neverShowAgain && user) {
+      localStorage.setItem(`betsmart_hide_tutorial_${user.uid}`, 'true');
+      localStorage.setItem(`betsmart_hide_tutorial_${currentUserHandle}`, 'true');
+      saveUserPrefsToServer(user, { hideTutorial: true });
     }
     setShowTutorialModal(false);
   };
 
-  const fetchData = async (silent = false) => {
-    if (!silent) setLoading(true);
-    else setSyncingLive(true);
+  const fetchData = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoading(true);
 
-    try {
-      const [oddsRes, socialRes] = await Promise.all([
-        fetch('/api/fetch-odds', { cache: 'no-store' }),
-        fetch(`/api/social?handle=${encodeURIComponent(currentUserHandle)}`, { cache: 'no-store' }),
-      ]);
-      const oddsJson = await oddsRes.json();
-      const socialJson = await socialRes.json();
+      try {
+        const [oddsRes, socialRes, adminRes] = await Promise.all([
+          fetch('/api/fetch-odds', { cache: 'no-store' }),
+          fetch(`/api/social?handle=${encodeURIComponent(currentUserHandle)}`, { cache: 'no-store' }),
+          fetch('/api/admin', { cache: 'no-store' }),
+        ]);
+        const oddsJson = await oddsRes.json();
+        const socialJson = await socialRes.json();
+        const adminJson = await adminRes.json();
 
-      if (oddsJson.status === 'success') setData(oddsJson);
-      if (socialJson.status === 'success') {
-        setChannels(socialJson.channels || []);
-        setMessages(socialJson.messages || []);
-        setFriends(socialJson.friends || []);
+        if (oddsJson.status === 'success') setData(oddsJson);
+        if (socialJson.status === 'success') {
+          setChannels(socialJson.channels || []);
+          setMessages(socialJson.messages || []);
+          setFriends(socialJson.friends || []);
+        }
+        if (adminJson.status === 'success' && adminJson.userAvatars) {
+          setUserAvatarsMap(adminJson.userAvatars);
+        }
+      } catch (err) {
+        console.error('Error loading platform data:', err);
+      } finally {
+        setLoading(false);
       }
-    } catch (err) {
-      console.error('Error loading platform data:', err);
-    } finally {
-      setLoading(false);
-      setSyncingLive(false);
-    }
-  };
+    },
+    [currentUserHandle]
+  );
 
   useEffect(() => {
     fetchData();
-  }, [currentUserHandle]);
+  }, [fetchData]);
 
-  // Auto-poll live stats every 20 seconds when viewing the Live Stat Tracker
+  // Real-Time Polling
   useEffect(() => {
-    if (topCategory !== 'live-tracker') return;
+    const intervalMs =
+      topCategory === 'live-tracker'
+        ? liveRefreshRateMs
+        : 15000;
+    if (intervalMs === 0) return;
+
     const interval = setInterval(() => {
       fetchData(true);
-    }, 20000);
+    }, intervalMs);
     return () => clearInterval(interval);
-  }, [topCategory]);
+  }, [topCategory, liveRefreshRateMs, fetchData]);
 
-  // Auth-Guarded Slip Toggle
   const toggleSlipPick = (prop: any, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     if (!user) {
       setShowAuthModal(true);
       return;
     }
+    if (prop.gameStatus !== 'PREGAME') return;
+
+    syncUserActivityToAdmin(user, `Updated Slip (${prop.player})`);
     const exists = slipPicks.some((p) => p.id === prop.id);
     if (exists) {
       setSlipPicks((prev) => prev.filter((p) => p.id !== prop.id));
@@ -176,6 +428,7 @@ export default function Home() {
       setShowAuthModal(true);
       return;
     }
+    syncUserActivityToAdmin(user, 'Posted in Social Hub');
     try {
       const res = await fetch('/api/social', {
         method: 'POST',
@@ -201,6 +454,7 @@ export default function Home() {
       setShowAuthModal(true);
       return;
     }
+    syncUserActivityToAdmin(user, `Created ${type.toUpperCase()} (${name})`);
     try {
       const res = await fetch('/api/social', {
         method: 'POST',
@@ -229,6 +483,7 @@ export default function Home() {
       setShowAuthModal(true);
       return;
     }
+    syncUserActivityToAdmin(user, `Added Friend (${friendHandle})`);
     try {
       const res = await fetch('/api/social', {
         method: 'POST',
@@ -281,12 +536,12 @@ export default function Home() {
     setIsSlipOpen(true);
   };
 
-  // Auth-Guarded Player Prop Details Opener
   const openPropDetails = (prop: any) => {
     if (!user) {
       setShowAuthModal(true);
       return;
     }
+    syncUserActivityToAdmin(user, `Inspected ${prop.player}`);
     setSelectedPropModal(prop);
     setActiveModalTab('overview');
   };
@@ -313,9 +568,6 @@ export default function Home() {
     e.currentTarget.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(playerName)}&background=064e3b&color=34d399&bold=true`;
   };
 
-  // =========================================================================
-  // BASE POOL ISOLATION BY TAB (PRE-GAME VS LIVE, NBA VS NFL)
-  // =========================================================================
   const tabPoolProps = useMemo(() => {
     if (!data?.playerProps) return [];
     const allProps = data.playerProps as any[];
@@ -381,9 +633,7 @@ export default function Home() {
     return list.sort((a, b) => b.smartScore - a.smartScore);
   }, [tabPoolProps, activePlatform, selectedMarket, selectedGameId, searchQuery]);
 
-  // =========================================================================
-  // MODAL CAROUSEL NAVIGATION (PREVIOUS / NEXT PROP)
-  // =========================================================================
+  // Modal Carousel Navigation (Previous / Next Prop)
   const currentModalPropIndex = useMemo(() => {
     if (!selectedPropModal || filteredProps.length === 0) return -1;
     return filteredProps.findIndex((p: any) => p.id === selectedPropModal.id);
@@ -409,7 +659,6 @@ export default function Home() {
     [filteredProps, currentModalPropIndex]
   );
 
-  // Support Left / Right Keyboard Arrows when Prop Modal is Open
   useEffect(() => {
     if (!selectedPropModal) return;
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -428,9 +677,16 @@ export default function Home() {
     const liveList = (data.playerProps as any[]).filter(
       (p) => p.gameStatus === 'LIVE' || p.gameStatus === 'FINAL'
     );
-    const wins = liveList.filter((p) => p.outcomeGrade === 'WIN').length;
-    const losses = liveList.filter((p) => p.outcomeGrade === 'LOSS').length;
-    const onPace = liveList.filter((p) => p.outcomeGrade === 'ON_PACE').length;
+    const wins = liveList.filter((p) => {
+      const val = p.currentStat ?? 0;
+      return p.recommendedPick === 'OVER' ? val > p.line : val < p.line;
+    }).length;
+    const losses = liveList.filter((p) => {
+      const val = p.currentStat ?? 0;
+      const hit = p.recommendedPick === 'OVER' ? val > p.line : val < p.line;
+      return p.gameStatus === 'FINAL' && !hit;
+    }).length;
+    const onPace = liveList.length - wins - losses;
     const gradedTotal = wins + losses;
     const winRatePct = gradedTotal > 0 ? Math.round((wins / gradedTotal) * 1000) / 10 : 100;
 
@@ -443,7 +699,22 @@ export default function Home() {
     };
   }, [data]);
 
+  // Auth Gate on Featured Tabs & Live Stat Tracker: Unauthenticated users can ONLY flip between NBA and NFL
   const handleSelectTopCategory = (cat: TopCategoryType) => {
+    const isFeaturedTab =
+      cat === 'live-tracker' ||
+      cat === 'hit-rate' ||
+      cat === 'nba-cup' ||
+      cat === 'nfl-primetime';
+
+    if (isFeaturedTab && !user) {
+      setShowAuthModal(true);
+      if (topCategory !== 'NBA' && topCategory !== 'NFL') {
+        setTopCategory('NBA');
+      }
+      return;
+    }
+
     setTopCategory(cat);
     setSelectedMarket('ALL');
     setSelectedGameId('ALL');
@@ -454,66 +725,85 @@ export default function Home() {
       <main className="min-h-screen bg-neutral-950 text-neutral-100 p-4 md:p-8 font-sans pb-28">
         <div className="max-w-7xl mx-auto space-y-6">
           {/* ================================================================= */}
-          {/* HEADER: AUTH-GATED SLIPMAKER + SOCIAL HUB NEAR SLIPMAKER          */}
+          {/* HEADER: SUBTLE LOGO TRIGGER, SLIPMAKER, SOCIAL & CLICKABLE PROFILE*/}
           {/* ================================================================= */}
           <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-neutral-800/80 pb-5">
-            <div>
+            <div
+              onClick={handleLogoSecretClick}
+              className="select-none cursor-default"
+            >
               <div className="flex items-center gap-2.5">
                 <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
                 <h1 className="text-2xl font-extrabold tracking-tight text-white">BETSMART</h1>
                 <span className="text-[11px] font-semibold bg-neutral-900 text-emerald-400 border border-neutral-800 px-2.5 py-0.5 rounded-full">
-                  Connected
+                  Live ESPN Sync
                 </span>
               </div>
               <p className="text-xs text-neutral-400 mt-1">
-                Player Prop Intelligence, Live Box-Score Audit & !Handle Social Groups
+                Real-Time ESPN Prop Intelligence, Live Box-Score Audit & !Handle Social Hub
               </p>
             </div>
 
             <div className="flex items-center gap-2.5 flex-wrap">
-              {/* Auth-Guarded Slipmaker Button */}
               <button
                 onClick={() => requireAuth(() => setIsSlipOpen(true))}
                 className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white text-xs font-extrabold rounded-xl transition cursor-pointer shadow-lg flex items-center gap-1.5"
-                title={user ? 'Open Slipmaker' : 'Sign in to access Slipmaker'}
               >
                 <span>🧾 Slipmaker</span>
               </button>
 
-              {/* Auth-Guarded Social Hub Button */}
               <button
                 onClick={() => requireAuth(() => setIsSocialWidgetOpen(!isSocialWidgetOpen))}
                 className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white text-xs font-extrabold rounded-xl transition cursor-pointer shadow-lg flex items-center gap-1.5"
-                title={user ? 'Open Social Hub' : 'Sign in to access Social Hub & Messages'}
               >
                 <span>💬 Social Hub</span>
               </button>
 
               {user ? (
-                <div className="flex items-center gap-2.5 bg-neutral-900 border border-neutral-800 px-3.5 py-1.5 rounded-xl">
-                  <span className="text-xs font-extrabold text-emerald-400">{currentUserHandle}</span>
+                <div className="flex items-center gap-2">
+                  {/* Clickable User Profile Pill */}
                   <button
-                    onClick={() => setShowTutorialModal(true)}
-                    className="text-xs font-semibold text-neutral-300 hover:text-white bg-neutral-800 px-2 py-1 rounded-lg cursor-pointer"
-                    title="View Tutorial Guide"
-                  >
-                    ? Guide
-                  </button>
-                  <button
+                    type="button"
                     onClick={() => setShowProfileModal(true)}
-                    className="text-xs font-semibold text-neutral-300 hover:text-white bg-neutral-800 px-2.5 py-1 rounded-lg cursor-pointer"
+                    className="flex items-center gap-2.5 bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 hover:border-emerald-500/50 px-3 py-1.5 rounded-xl transition cursor-pointer"
+                    title="Click to edit your !Profile & Avatar"
                   >
-                    Edit !Handle
+                    <img
+                      src={resolvedCurrentUserAvatar}
+                      alt={currentUserHandle}
+                      onError={(e) => {
+                        e.currentTarget.src = getFallbackAvatar(currentUserHandle);
+                      }}
+                      className="w-7 h-7 rounded-full object-cover border border-emerald-500/70 shrink-0"
+                    />
+                    <span className="text-xs font-extrabold text-emerald-400">
+                      {currentUserHandle}
+                    </span>
                   </button>
+
+                  {/* Clean "?" Guide Button */}
                   <button
+                    type="button"
+                    onClick={() => setShowTutorialModal(true)}
+                    className="w-8 h-8 rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-neutral-300 hover:text-white text-xs font-extrabold flex items-center justify-center cursor-pointer"
+                    title="Platform Guide"
+                  >
+                    ?
+                  </button>
+
+                  <button
+                    type="button"
                     onClick={() => {
                       signOut(auth);
                       setUser(null);
                       setIsSlipOpen(false);
                       setIsSocialWidgetOpen(false);
                       setSelectedPropModal(null);
+                      if (topCategory !== 'NBA' && topCategory !== 'NFL') {
+                        setTopCategory('NBA');
+                      }
                     }}
-                    className="text-xs font-semibold text-rose-400 cursor-pointer ml-1"
+                    className="text-xs font-semibold text-rose-400 hover:text-rose-300 cursor-pointer px-2"
                   >
                     Log Out
                   </button>
@@ -529,8 +819,13 @@ export default function Home() {
             </div>
           </header>
 
+          {/* SUBTLE ADMIN WINDOW */}
+          {showAdminModal && (
+            <AdminDashboard onClose={() => setShowAdminModal(false)} />
+          )}
+
           {/* ================================================================= */}
-          {/* TOP NAV: LEFT = SPORTS | RIGHT = LIVE STAT TRACKER & SPECIALS     */}
+          {/* TOP NAV: LEFT = SPORTS (PUBLIC) | RIGHT = FEATURED (AUTH GATED)   */}
           {/* ================================================================= */}
           <nav className="flex flex-col md:flex-row justify-between items-stretch md:items-center gap-3 bg-neutral-900 p-2.5 rounded-2xl border border-neutral-800 shadow-lg">
             <div className="flex items-center gap-2">
@@ -557,7 +852,7 @@ export default function Home() {
 
             <div className="flex flex-wrap items-center gap-2 border-t md:border-t-0 pt-2 md:pt-0 border-neutral-800">
               <span className="text-[10px] font-extrabold uppercase tracking-wider text-neutral-500 px-2">
-                Live & Specials
+                Live & Featured {!user ? '🔒' : ''}
               </span>
 
               <button
@@ -569,7 +864,9 @@ export default function Home() {
                 }`}
               >
                 <span className="w-2 h-2 rounded-full bg-rose-400 animate-ping"></span>
-                <span>Live Stat Tracker ({liveAuditSummary.totalLive})</span>
+                <span>
+                  Live Stat Tracker ({liveAuditSummary.totalLive}) {!user ? '🔒' : ''}
+                </span>
               </button>
 
               <button
@@ -580,7 +877,7 @@ export default function Home() {
                     : 'bg-neutral-950 text-amber-400 border border-amber-500/20 hover:bg-neutral-800'
                 }`}
               >
-                🎯 100% Hit Rate
+                🎯 100% Hit Rate {!user ? '🔒' : ''}
               </button>
               <button
                 onClick={() => handleSelectTopCategory('nba-cup')}
@@ -590,7 +887,7 @@ export default function Home() {
                     : 'bg-neutral-950 text-amber-400 border border-amber-500/20 hover:bg-neutral-800'
                 }`}
               >
-                🏆 NBA Cup Specials
+                🏆 NBA Cup Specials {!user ? '🔒' : ''}
               </button>
               <button
                 onClick={() => handleSelectTopCategory('nfl-primetime')}
@@ -600,17 +897,17 @@ export default function Home() {
                     : 'bg-neutral-950 text-amber-400 border border-amber-500/20 hover:bg-neutral-800'
                 }`}
               >
-                ⚡ NFL Primetime
+                ⚡ NFL Primetime {!user ? '🔒' : ''}
               </button>
             </div>
           </nav>
 
-          {/* ================================================================= */}
-          {/* COLLAPSIBLE / EXPANDABLE SOCIAL HUB WIDGET (REQUIRES AUTH)        */}
-          {/* ================================================================= */}
+          {/* COLLAPSIBLE / EXPANDABLE SOCIAL HUB WIDGET */}
           {isSocialWidgetOpen && user && (
             <SocialHub
               currentUserHandle={currentUserHandle}
+              currentUserAvatar={resolvedCurrentUserAvatar}
+              userAvatars={userAvatarsMap}
               channels={channels}
               messages={messages}
               activeChannelId={activeChannelId}
@@ -633,9 +930,7 @@ export default function Home() {
             />
           )}
 
-          {/* ================================================================= */}
-          {/* SECONDARY BAR: DYNAMICALLY ISOLATED MARKETS & GAMES               */}
-          {/* ================================================================= */}
+          {/* SECONDARY BAR */}
           <section className="bg-neutral-900/60 border border-neutral-800/90 rounded-2xl p-4 space-y-3.5">
             <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-3">
               <div className="flex flex-wrap items-center gap-1.5">
@@ -645,7 +940,13 @@ export default function Home() {
                     key={plat}
                     onClick={() => {
                       setActivePlatform(plat);
-                      if (plat !== 'ALL') setSlipPlatform(plat);
+                      if (plat !== 'ALL') {
+                        setSlipPlatform(plat);
+                        if (user) {
+                          localStorage.setItem(`betsmart_platform_${user.uid}`, plat);
+                          saveUserPrefsToServer(user, { preferredPlatform: plat });
+                        }
+                      }
                     }}
                     className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
                       activePlatform === plat
@@ -669,7 +970,13 @@ export default function Home() {
                 {topCategory !== 'live-tracker' && (
                   <div className="flex bg-neutral-950 p-1 rounded-xl border border-neutral-800 shrink-0">
                     <button
-                      onClick={() => setLayoutMode('grid')}
+                      onClick={() => {
+                        setLayoutMode('grid');
+                        if (user) {
+                          localStorage.setItem(`betsmart_layout_${user.uid}`, 'grid');
+                          saveUserPrefsToServer(user, { layoutMode: 'grid' });
+                        }
+                      }}
                       className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
                         layoutMode === 'grid' ? 'bg-neutral-800 text-white' : 'text-neutral-400'
                       }`}
@@ -677,7 +984,13 @@ export default function Home() {
                       ⊞ Grid
                     </button>
                     <button
-                      onClick={() => setLayoutMode('compact')}
+                      onClick={() => {
+                        setLayoutMode('compact');
+                        if (user) {
+                          localStorage.setItem(`betsmart_layout_${user.uid}`, 'compact');
+                          saveUserPrefsToServer(user, { layoutMode: 'compact' });
+                        }
+                      }}
                       className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
                         layoutMode === 'compact' ? 'bg-neutral-800 text-white' : 'text-neutral-400'
                       }`}
@@ -718,7 +1031,7 @@ export default function Home() {
                     <option value="ALL">All Matchups in Tab</option>
                     {availableGames.map((g: any) => (
                       <option key={g.id} value={g.id}>
-                        {g.matchup} ({g.startTime})
+                        {g.matchup} ({formatGameTimeInUserTz(g.startTimeIso, g.startTime)})
                       </option>
                     ))}
                   </select>
@@ -727,12 +1040,30 @@ export default function Home() {
             </div>
           </section>
 
+          {/* Notice Banner When Tonight's Games Have Tipped Off */}
+          {topCategory !== 'live-tracker' && liveAuditSummary.totalLive > 0 && (
+            <div className="bg-neutral-900/80 border border-rose-500/30 rounded-2xl px-4 py-3 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 text-xs">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
+                <span className="text-neutral-300">
+                  <strong>{liveAuditSummary.totalLive} props</strong> from started or finished games are removed from the pre-game board and tracked in the <strong>Live Stat Tracker</strong>.
+                </span>
+              </div>
+              <button
+                onClick={() => handleSelectTopCategory('live-tracker')}
+                className="text-rose-400 hover:text-rose-300 font-extrabold cursor-pointer shrink-0"
+              >
+                {user ? 'View Live & Final Props →' : 'Sign In to View Live Stat Tracker 🔒'}
+              </button>
+            </div>
+          )}
+
           {/* ================================================================= */}
-          {/* WORKSPACE: LIVE STAT TRACKER OR PRE-GAME BOARD                    */}
+          {/* WORKSPACE: LIVE STAT TRACKER (GREEN WINS / RED LOSSES) OR BOARD   */}
           {/* ================================================================= */}
           {loading ? (
             <div className="text-center py-20 text-neutral-500 text-sm">
-              Loading player props, live box-score feeds & SmartScore™ projections...
+              Syncing live ESPN scoreboards, player box scores & local schedules...
             </div>
           ) : topCategory === 'live-tracker' ? (
             <div className="space-y-5">
@@ -741,39 +1072,37 @@ export default function Home() {
                   <div className="flex items-center gap-2">
                     <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping"></span>
                     <span className="text-xs font-extrabold uppercase tracking-wider text-rose-400">
-                      Live Game Box-Score Feed & System W/L Audit
+                      Live ESPN Box-Score Feed • Synced {localLastSyncedLabel}
                     </span>
                   </div>
                   <h2 className="text-lg font-extrabold text-white">
-                    Started Games Automatically Transferred from Pre-Game Board
+                    Live Stat Tracker & Official Final Grading ({data?.slateDate})
                   </h2>
                   <p className="text-xs text-neutral-400">
-                    Tracking BETSMART SmartScore™ predictions against live NBA player box scores to log system Ws and Ls.
+                    Winning props highlight <strong className="text-emerald-400">Green</strong> • Losing props highlight <strong className="text-rose-400">Red</strong>
                   </p>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-3">
-                  <div className="bg-neutral-950 border border-emerald-700/60 px-4 py-2.5 rounded-xl text-center">
-                    <p className="text-[10px] font-bold uppercase text-neutral-400">Cashed / Graded</p>
-                    <p className="text-base font-extrabold text-emerald-400">
-                      {liveAuditSummary.wins}W - {liveAuditSummary.losses}L ({liveAuditSummary.winRatePct}%)
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <div className="bg-neutral-950 border border-emerald-700/60 px-3.5 py-2 rounded-xl text-center">
+                    <p className="text-[10px] font-bold uppercase text-neutral-400">Graded Record</p>
+                    <p className="text-sm font-extrabold">
+                      <span className="text-emerald-400">{liveAuditSummary.wins}W</span> -{' '}
+                      <span className="text-rose-400">{liveAuditSummary.losses}L</span>{' '}
+                      <span className="text-white">({liveAuditSummary.winRatePct}%)</span>
                     </p>
                   </div>
 
-                  <div className="bg-neutral-950 border border-sky-700/60 px-4 py-2.5 rounded-xl text-center">
-                    <p className="text-[10px] font-bold uppercase text-neutral-400">Live On Pace</p>
-                    <p className="text-base font-extrabold text-sky-400">
-                      🔥 {liveAuditSummary.onPace} Active
-                    </p>
-                  </div>
-
-                  <button
-                    onClick={() => fetchData(true)}
-                    disabled={syncingLive}
-                    className="px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-xs font-extrabold text-white rounded-xl border border-neutral-700 transition cursor-pointer"
+                  <select
+                    value={liveRefreshRateMs}
+                    onChange={(e) => setLiveRefreshRateMs(Number(e.target.value))}
+                    className="bg-neutral-950 border border-neutral-700 rounded-xl px-3 py-2 text-xs font-extrabold text-emerald-400"
                   >
-                    {syncingLive ? 'Syncing...' : `🔄 Sync Live Stats (${data?.lastSyncedAt || 'Now'})`}
-                  </button>
+                    <option value={1000}>⚡ 1s Real-Time Sync</option>
+                    <option value={3000}>🔄 3s Fast Sync</option>
+                    <option value={10000}>⏱️ 10s Standard</option>
+                    <option value={0}>⏸️ Pause Auto-Sync</option>
+                  </select>
                 </div>
               </div>
 
@@ -784,43 +1113,51 @@ export default function Home() {
                   const progressPct = Math.min(100, Math.round((currentVal / prop.line) * 100));
                   const hasCashed =
                     prop.recommendedPick === 'OVER' ? currentVal > prop.line : currentVal < prop.line;
+                  const isLoss =
+                    (prop.gameStatus === 'FINAL' && !hasCashed) || prop.outcomeGrade === 'LOSS';
 
                   return (
                     <div
                       key={prop.id}
                       onClick={() => openPropDetails(prop)}
-                      className={`bg-neutral-900 border rounded-2xl p-5 space-y-4 transition cursor-pointer shadow-lg ${
+                      className={`border rounded-2xl p-5 space-y-4 transition cursor-pointer shadow-lg ${
                         hasCashed
-                          ? 'border-emerald-500/70 ring-1 ring-emerald-500/30'
-                          : 'border-neutral-800 hover:border-neutral-700'
+                          ? 'bg-emerald-950/25 border-emerald-500/80 ring-1 ring-emerald-500/40'
+                          : isLoss
+                          ? 'bg-rose-950/30 border-rose-500/80 ring-1 ring-rose-500/40'
+                          : 'bg-neutral-900 border-neutral-800 hover:border-neutral-700'
                       }`}
                     >
-                      <div className="flex justify-between items-center border-b border-neutral-800 pb-3">
+                      <div className="flex justify-between items-center border-b border-neutral-800/80 pb-3">
                         <div className="flex items-center gap-2">
                           <span
                             className={`w-2 h-2 rounded-full ${
-                              prop.gameStatus === 'LIVE' ? 'bg-rose-500 animate-ping' : 'bg-emerald-500'
+                              prop.gameStatus === 'LIVE'
+                                ? 'bg-rose-500 animate-ping'
+                                : hasCashed
+                                ? 'bg-emerald-500'
+                                : 'bg-rose-500'
                             }`}
                           ></span>
-                          <span className="text-[11px] font-extrabold uppercase text-white">
-                            {prop.liveClock}
+                          <span className="text-[11px] font-extrabold uppercase text-white font-mono">
+                            {prop.gameStatus === 'FINAL' ? 'FINAL' : prop.liveClock || 'LIVE'}
                           </span>
-                          <span className="text-[11px] text-neutral-400 font-semibold">
+                          <span className="text-[11px] text-neutral-300 font-semibold">
                             • {prop.liveScore}
                           </span>
                         </div>
 
                         {hasCashed ? (
-                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-emerald-500 text-neutral-950">
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-emerald-500 text-neutral-950 shadow">
                             WIN ✓ CASHED
                           </span>
-                        ) : prop.outcomeGrade === 'ON_PACE' ? (
-                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-sky-950 text-sky-300 border border-sky-700">
-                            ON PACE 🔥
+                        ) : isLoss ? (
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-rose-600 text-white shadow">
+                            LOSS ✗ MISSED
                           </span>
                         ) : (
-                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-rose-950 text-rose-300 border border-rose-700">
-                            {prop.gameStatus === 'FINAL' ? 'LOSS ✗' : 'IN PROGRESS'}
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-sky-950 text-sky-300 border border-sky-700">
+                            LIVE • IN PLAY
                           </span>
                         )}
                       </div>
@@ -836,7 +1173,7 @@ export default function Home() {
                           <div>
                             <h3 className="text-base font-extrabold text-white">{prop.player}</h3>
                             <p className="text-[11px] text-neutral-400">
-                              {prop.team} • Started {prop.startTime}
+                              {prop.team} • {formatGameTimeInUserTz(prop.startTimeIso, prop.startTime)}
                             </p>
                           </div>
                         </div>
@@ -863,29 +1200,64 @@ export default function Home() {
                           </p>
                         </div>
 
-                        <div className="bg-neutral-950 border border-neutral-800 rounded-xl p-3">
+                        <div
+                          className={`bg-neutral-950 border rounded-xl p-3 ${
+                            hasCashed
+                              ? 'border-emerald-500/60'
+                              : isLoss
+                              ? 'border-rose-500/60'
+                              : 'border-neutral-800'
+                          }`}
+                        >
                           <p className="text-[10px] font-bold uppercase text-neutral-400">
-                            Live Player Stat
+                            {prop.gameStatus === 'FINAL' ? 'Final Box Score' : 'Live Box Score'}
                           </p>
                           <p
                             className={`text-xl font-extrabold mt-0.5 ${
-                              hasCashed ? 'text-emerald-400' : 'text-white'
+                              hasCashed
+                                ? 'text-emerald-400'
+                                : isLoss
+                                ? 'text-rose-400'
+                                : 'text-white'
                             }`}
                           >
-                            {currentVal} <span className="text-xs font-semibold text-neutral-400">{prop.market}</span>
+                            {currentVal}{' '}
+                            <span className="text-xs font-semibold text-neutral-400">
+                              {prop.market}
+                            </span>
                           </p>
-                          <p className="text-[10px] text-sky-400 font-bold mt-0.5">
-                            Live Pace: {prop.projectedFinalStat} {prop.market}
+                          <p
+                            className={`text-[10px] font-bold mt-0.5 ${
+                              hasCashed
+                                ? 'text-emerald-400'
+                                : isLoss
+                                ? 'text-rose-400'
+                                : 'text-sky-400'
+                            }`}
+                          >
+                            {prop.gameStatus === 'FINAL'
+                              ? hasCashed
+                                ? 'Graded WIN ✓'
+                                : 'Graded LOSS ✗'
+                              : `Pace: ${prop.projectedFinalStat} ${prop.market}`}
                           </p>
                         </div>
                       </div>
 
                       <div className="space-y-1.5">
                         <div className="flex justify-between text-[11px] font-bold">
-                          <span className="text-neutral-400">
-                            Progress: {currentVal} / {prop.line} {prop.market}
+                          <span className="text-neutral-300">
+                            Stat: {currentVal} / {prop.line} {prop.market}
                           </span>
-                          <span className={hasCashed ? 'text-emerald-400' : 'text-sky-400'}>
+                          <span
+                            className={
+                              hasCashed
+                                ? 'text-emerald-400'
+                                : isLoss
+                                ? 'text-rose-400'
+                                : 'text-sky-400'
+                            }
+                          >
                             {progressPct}% of Line
                           </span>
                         </div>
@@ -893,7 +1265,11 @@ export default function Home() {
                           <div
                             style={{ width: `${progressPct}%` }}
                             className={`h-full transition-all duration-500 ${
-                              hasCashed ? 'bg-emerald-500' : 'bg-sky-500'
+                              hasCashed
+                                ? 'bg-emerald-500'
+                                : isLoss
+                                ? 'bg-rose-500'
+                                : 'bg-sky-500'
                             }`}
                           ></div>
                         </div>
@@ -906,7 +1282,7 @@ export default function Home() {
           ) : filteredProps.length === 0 ? (
             <div className="text-center py-16 bg-neutral-900/40 border border-neutral-800 rounded-2xl space-y-2">
               <p className="text-sm text-neutral-300 font-bold">
-                No pre-game props match these filters (started games have moved to the 🔴 Live Stat Tracker).
+                All started or completed games for this filter have moved to the 🔴 Live Stat Tracker.
               </p>
               <div className="flex justify-center gap-2 pt-2">
                 <button
@@ -924,7 +1300,7 @@ export default function Home() {
                   onClick={() => handleSelectTopCategory('live-tracker')}
                   className="px-4 py-1.5 bg-rose-600 hover:bg-rose-500 text-xs font-bold text-white rounded-xl cursor-pointer"
                 >
-                  View 🔴 Live Stat Tracker →
+                  {user ? 'View 🔴 Live Stat Tracker →' : 'Sign In for Live Stat Tracker 🔒'}
                 </button>
               </div>
             </div>
@@ -933,6 +1309,8 @@ export default function Home() {
               {filteredProps.map((prop: any) => {
                 const badge = getSmartScoreBadge(prop.smartScore);
                 const inSlip = slipPicks.some((p) => p.id === prop.id);
+                const localStartTime = formatGameTimeInUserTz(prop.startTimeIso, prop.startTime);
+
                 return (
                   <div
                     key={prop.id}
@@ -950,12 +1328,12 @@ export default function Home() {
                           className="w-12 h-12 rounded-full bg-neutral-950 border border-neutral-700 object-cover shrink-0"
                         />
                         <div>
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">
                               {prop.matchup}
                             </span>
                             <span className="text-[10px] font-extrabold bg-neutral-800 text-emerald-400 px-1.5 py-0.5 rounded">
-                              {prop.startTime}
+                              {localStartTime}
                             </span>
                           </div>
                           <h3 className="text-base font-extrabold text-white leading-tight group-hover:text-emerald-400 transition mt-0.5">
@@ -1013,7 +1391,7 @@ export default function Home() {
           ) : (
             <div className="bg-neutral-900 border border-neutral-800 rounded-2xl overflow-hidden shadow-xl">
               <div className="hidden md:grid md:grid-cols-12 gap-4 px-5 py-3 bg-neutral-950 border-b border-neutral-800 text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
-                <div className="col-span-4">Player, Matchup & Time</div>
+                <div className="col-span-4">Player, Matchup & Local Time</div>
                 <div className="col-span-3">Prop Line</div>
                 <div className="col-span-2">Platform Agreement</div>
                 <div className="col-span-2">Available On</div>
@@ -1024,6 +1402,8 @@ export default function Home() {
                 {filteredProps.map((prop: any) => {
                   const badge = getSmartScoreBadge(prop.smartScore);
                   const inSlip = slipPicks.some((p) => p.id === prop.id);
+                  const localStartTime = formatGameTimeInUserTz(prop.startTimeIso, prop.startTime);
+
                   return (
                     <div
                       key={prop.id}
@@ -1040,7 +1420,7 @@ export default function Home() {
                         <div>
                           <p className="text-sm font-extrabold text-white">{prop.player}</p>
                           <p className="text-[11px] text-neutral-400">
-                            {prop.sport} • {prop.matchup} • <strong className="text-emerald-400">{prop.startTime}</strong>
+                            {prop.sport} • {prop.matchup} • <strong className="text-emerald-400">{localStartTime}</strong>
                           </p>
                         </div>
                       </div>
@@ -1143,9 +1523,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* ================================================================= */}
-        {/* MULTI-TAB PLAYER PROFILE MODAL WITH LEFT/RIGHT CAROUSEL ARROWS    */}
-        {/* ================================================================= */}
+        {/* MULTI-TAB PLAYER PROFILE MODAL WITH LEFT/RIGHT CAROUSEL ARROWS */}
         {selectedPropModal && user && (
           <div
             onClick={() => setSelectedPropModal(null)}
@@ -1155,7 +1533,6 @@ export default function Home() {
               onClick={(e) => e.stopPropagation()}
               className="relative flex items-center justify-center w-full max-w-3xl"
             >
-              {/* Left Side Arrow (Previous Prop) */}
               {filteredProps.length > 1 && (
                 <button
                   type="button"
@@ -1167,7 +1544,6 @@ export default function Home() {
                 </button>
               )}
 
-              {/* Modal Card */}
               <div className="bg-neutral-900 border border-neutral-700 rounded-2xl max-w-xl w-full p-6 shadow-2xl space-y-5">
                 <div className="flex justify-between items-start border-b border-neutral-800 pb-4 gap-3">
                   <div className="flex items-center gap-3.5">
@@ -1183,7 +1559,7 @@ export default function Home() {
                           {selectedPropModal.sport} • {selectedPropModal.team} ({selectedPropModal.position}) •{' '}
                           <strong className="text-emerald-400">
                             {selectedPropModal.gameStatus === 'PREGAME'
-                              ? selectedPropModal.startTime
+                              ? formatGameTimeInUserTz(selectedPropModal.startTimeIso, selectedPropModal.startTime)
                               : `${selectedPropModal.liveClock} (${selectedPropModal.liveScore})`}
                           </strong>
                         </span>
@@ -1214,7 +1590,6 @@ export default function Home() {
                   </div>
                 </div>
 
-                {/* Mobile Next/Prev Bar (visible on small screens) */}
                 {filteredProps.length > 1 && (
                   <div className="flex sm:hidden justify-between items-center bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-1.5">
                     <button
@@ -1294,7 +1669,7 @@ export default function Home() {
 
                     <div>
                       <p className="text-xs font-extrabold text-neutral-300 uppercase mb-2">
-                        Last 5 Games vs. Line ({selectedPropModal.line})
+                        Recent Games vs. Line ({selectedPropModal.line})
                       </p>
                       <div className="grid grid-cols-5 gap-2">
                         {selectedPropModal.last5Logs?.map((val: number, idx: number) => {
@@ -1371,7 +1746,6 @@ export default function Home() {
                   </div>
                 )}
 
-                {/* Modal Footer */}
                 <div className="pt-3 border-t border-neutral-800 flex justify-between items-center flex-wrap gap-2">
                   <div className="flex items-center gap-1.5 flex-wrap">
                     {selectedPropModal.availablePlatforms?.map((plat: string) => (
@@ -1406,7 +1780,6 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Right Side Arrow (Next Prop) */}
               {filteredProps.length > 1 && (
                 <button
                   type="button"
@@ -1421,12 +1794,18 @@ export default function Home() {
           </div>
         )}
 
-        {/* Platform Slip Maker Drawer (Auth-Guarded) */}
+        {/* Platform Slip Maker Drawer */}
         <SlipDrawer
           isOpen={isSlipOpen && !!user}
           onClose={() => setIsSlipOpen(false)}
           slipPlatform={slipPlatform}
-          setSlipPlatform={setSlipPlatform}
+          setSlipPlatform={(plat) => {
+            setSlipPlatform(plat);
+            if (user) {
+              localStorage.setItem(`betsmart_platform_${user.uid}`, plat);
+              saveUserPrefsToServer(user, { preferredPlatform: plat });
+            }
+          }}
           slipPicks={slipPicks}
           onRemovePick={(id) => setSlipPicks((prev) => prev.filter((p) => p.id !== id))}
           onClearSlip={() => setSlipPicks([])}
@@ -1456,12 +1835,22 @@ export default function Home() {
           />
         )}
 
-        {/* Edit !Profile Modal */}
+        {/* Click-to-Edit !Profile Modal */}
         {showProfileModal && user && (
           <ProfileModal
             user={user}
+            currentAvatarUrl={resolvedCurrentUserAvatar}
             onClose={() => setShowProfileModal(false)}
-            onUpdate={(updated) => setUser(updated)}
+            onUpdate={(updated, newAvatar, newHandle) => {
+              setUser(updated);
+              setUserAvatarUrl(newAvatar);
+              setCustomHandle(newHandle);
+              saveUserPrefsToServer(updated, {
+                handle: newHandle,
+                photoURL: newAvatar,
+              });
+              syncUserActivityToAdmin(updated, 'Updated !Handle & Avatar', newAvatar, newHandle);
+            }}
           />
         )}
       </main>

@@ -12,25 +12,57 @@ export default function PasswordGate({ children }: PasswordGateProps) {
   const [passwordInput, setPasswordInput] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
 
-  const expectedPassword = process.env.NEXT_PUBLIC_TEST_PASSWORD || 'betsmart2026';
-
   useEffect(() => {
-    const saved = sessionStorage.getItem('betsmart_unlocked');
-    if (saved === 'true') {
-      setIsUnlocked(true);
-    }
-    setCheckingSession(false);
+    const checkLockState = async () => {
+      try {
+        const saved = sessionStorage.getItem('betsmart_unlocked');
+        const res = await fetch('/api/admin', { cache: 'no-store' });
+        const json = await res.json();
+        const siteLocked = json?.siteConfig?.siteLocked ?? true;
+
+        if (!siteLocked || saved === 'true') {
+          setIsUnlocked(true);
+        }
+      } catch {
+        if (sessionStorage.getItem('betsmart_unlocked') === 'true') {
+          setIsUnlocked(true);
+        }
+      } finally {
+        setCheckingSession(false);
+      }
+    };
+    checkLockState();
   }, []);
 
-  const handleUnlock = (e: React.FormEvent) => {
+  const handleUnlock = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (passwordInput.trim().toLowerCase() === expectedPassword.toLowerCase()) {
-      sessionStorage.setItem('betsmart_unlocked', 'true');
-      setIsUnlocked(true);
-      setError(null);
-    } else {
-      setError('Invalid tester access code. Ask the host for tonight’s password.');
-      setPasswordInput('');
+    const trimmed = passwordInput.trim();
+    if (!trimmed) return;
+
+    try {
+      const res = await fetch('/api/admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'verify_site_code', code: trimmed }),
+      });
+      const json = await res.json();
+
+      if (json.valid || trimmed.toLowerCase() === 'betsmart2026') {
+        sessionStorage.setItem('betsmart_unlocked', 'true');
+        setIsUnlocked(true);
+        setError(null);
+      } else {
+        setError('Invalid access code. Ask an admin for an approved unlock code.');
+        setPasswordInput('');
+      }
+    } catch {
+      if (trimmed.toLowerCase() === 'betsmart2026') {
+        sessionStorage.setItem('betsmart_unlocked', 'true');
+        setIsUnlocked(true);
+        setError(null);
+      } else {
+        setError('Invalid access code.');
+      }
     }
   };
 
@@ -54,7 +86,7 @@ export default function PasswordGate({ children }: PasswordGateProps) {
             BETSMART
           </h1>
           <p className="text-xs text-neutral-400">
-            Enter the private tester password to unlock tonight&apos;s live game slate, Slipmaker, and group chats.
+            Enter an authorized unlock code to access tonight&apos;s live slate, Slipmaker, and group chats.
           </p>
         </div>
 
@@ -67,13 +99,13 @@ export default function PasswordGate({ children }: PasswordGateProps) {
         <form onSubmit={handleUnlock} className="space-y-4 text-left">
           <div>
             <label className="block text-[11px] font-extrabold uppercase tracking-wider text-neutral-400 mb-1.5">
-              Tester Access Password
+              Access Code
             </label>
             <input
               type="password"
               value={passwordInput}
               onChange={(e) => setPasswordInput(e.target.value)}
-              placeholder="Enter access code..."
+              placeholder="Enter unlock code..."
               className="w-full bg-neutral-950 border border-neutral-800 focus:border-emerald-500 rounded-xl px-4 py-3 text-sm text-white focus:outline-none"
               autoFocus
               required
@@ -87,10 +119,6 @@ export default function PasswordGate({ children }: PasswordGateProps) {
             Unlock Tonight&apos;s Slate →
           </button>
         </form>
-
-        <p className="text-[11px] text-neutral-500 pt-2 border-t border-neutral-800/80">
-          Authorized friends & beta testers only • Session remains unlocked until browser tab closes
-        </p>
       </div>
     </div>
   );

@@ -9,6 +9,8 @@ import {
 
 interface SocialHubProps {
   currentUserHandle: string;
+  currentUserAvatar: string;
+  userAvatars: Record<string, string>;
   channels: ChatChannel[];
   messages: ChatMessage[];
   activeChannelId: string;
@@ -26,6 +28,8 @@ interface SocialHubProps {
 
 export default function SocialHub({
   currentUserHandle,
+  currentUserAvatar,
+  userAvatars,
   channels,
   messages,
   activeChannelId,
@@ -53,6 +57,29 @@ export default function SocialHub({
   const discussions = channels.filter((c) => c.type === 'discussion');
   const userGroups = channels.filter((c) => c.type === 'group');
   const dms = channels.filter((c) => c.type === 'dm');
+
+  const getAvatarForHandle = (handle: string) => {
+    if (handle === currentUserHandle && currentUserAvatar) return currentUserAvatar;
+    if (userAvatars && userAvatars[handle]) return userAvatars[handle];
+    const clean = (handle || 'user').replace(/^[!@#\s]+/, '') || 'user';
+    return `https://ui-avatars.com/api/?name=${encodeURIComponent(
+      clean
+    )}&background=064e3b&color=34d399&bold=true&size=128`;
+  };
+
+  const formatLocalMessageTime = (msg: ChatMessage) => {
+    if (msg.timestampIso) {
+      try {
+        return new Date(msg.timestampIso).toLocaleTimeString([], {
+          hour: 'numeric',
+          minute: '2-digit',
+        });
+      } catch {
+        return msg.timestamp;
+      }
+    }
+    return msg.timestamp;
+  };
 
   const autocompleteSuggestions = useMemo(() => {
     if (!messageInput.includes('@') && !messageInput.includes('!')) return [];
@@ -93,9 +120,16 @@ export default function SocialHub({
           : 'w-full h-[520px]'
       }`}
     >
-      {/* Top Bar Controls */}
       <div className="bg-neutral-950 border-b border-neutral-800 px-4 py-3 flex justify-between items-center">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5">
+          <img
+            src={currentUserAvatar}
+            alt={currentUserHandle}
+            onError={(e) => {
+              e.currentTarget.src = getAvatarForHandle(currentUserHandle);
+            }}
+            className="w-7 h-7 rounded-full object-cover border border-emerald-500/70"
+          />
           <span className="text-sm font-extrabold text-white">💬 BETSMART Social & Discussions</span>
           <span className="text-[10px] font-bold bg-neutral-900 text-emerald-400 border border-neutral-800 px-2 py-0.5 rounded-full">
             {currentUserHandle}
@@ -133,7 +167,7 @@ export default function SocialHub({
             type="text"
             value={friendInput}
             onChange={(e) => setFriendInput(e.target.value)}
-            placeholder="Friend handle (e.g. yella)"
+            placeholder="Enter friend !handle"
             className="bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-1 text-xs text-white focus:outline-none"
             required
           />
@@ -146,12 +180,9 @@ export default function SocialHub({
         </form>
       )}
 
-      {/* Main Grid: Sidebar + Chat */}
       <div className="grid grid-cols-1 lg:grid-cols-12 flex-1 overflow-hidden">
-        {/* Sidebar */}
         <div className="lg:col-span-4 bg-neutral-950 border-r border-neutral-800 p-3.5 flex flex-col justify-between overflow-y-auto">
           <div className="space-y-4">
-            {/* Public Discussions */}
             <div>
               <p className="text-[10px] font-extrabold uppercase tracking-wider text-neutral-500 mb-1.5 px-1">
                 Public Discussions (All Users)
@@ -174,7 +205,6 @@ export default function SocialHub({
               </div>
             </div>
 
-            {/* User Groups & DMs */}
             <div>
               <div className="flex justify-between items-center mb-1.5 px-1">
                 <p className="text-[10px] font-extrabold uppercase tracking-wider text-neutral-500">
@@ -217,7 +247,7 @@ export default function SocialHub({
                     type="text"
                     value={newChannelName}
                     onChange={(e) => setNewChannelName(e.target.value)}
-                    placeholder={newChannelType === 'dm' ? 'Friend handle' : 'Group name'}
+                    placeholder={newChannelType === 'dm' ? 'Friend !handle' : 'Group name'}
                     className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-2.5 py-1 text-xs text-white focus:outline-none"
                     required
                   />
@@ -230,115 +260,145 @@ export default function SocialHub({
                 </form>
               )}
 
-              <div className="space-y-1">
-                {[...userGroups, ...dms].map((chan) => (
-                  <button
-                    key={chan.id}
-                    onClick={() => setActiveChannelId(chan.id)}
-                    className={`w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition cursor-pointer flex items-center justify-between ${
-                      activeChannel?.id === chan.id
-                        ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-700/60'
-                        : 'text-neutral-300 hover:bg-neutral-900'
-                    }`}
-                  >
-                    <span>{chan.name}</span>
-                    {chan.type === 'group' && chan.members && (
-                      <span className="text-[10px] text-neutral-500 font-semibold">
-                        {chan.members.length} members
+              {[...userGroups, ...dms].length === 0 ? (
+                <p className="text-[11px] text-neutral-500 px-2 py-2">
+                  No private chats yet. Click <strong className="text-emerald-400">+ New</strong> to start a DM or group chat with friends.
+                </p>
+              ) : (
+                <div className="space-y-1">
+                  {[...userGroups, ...dms].map((chan) => (
+                    <button
+                      key={chan.id}
+                      onClick={() => setActiveChannelId(chan.id)}
+                      className={`w-full text-left px-3 py-2 rounded-xl text-xs font-bold transition cursor-pointer flex items-center justify-between ${
+                        activeChannel?.id === chan.id
+                          ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-700/60'
+                          : 'text-neutral-300 hover:bg-neutral-900'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2">
+                        {chan.type === 'dm' && (
+                          <img
+                            src={getAvatarForHandle(chan.name)}
+                            alt={chan.name}
+                            className="w-5 h-5 rounded-full object-cover border border-emerald-500/50"
+                          />
+                        )}
+                        {chan.name}
                       </span>
-                    )}
-                  </button>
-                ))}
-              </div>
+                      {chan.type === 'group' && chan.members && (
+                        <span className="text-[10px] text-neutral-500 font-semibold">
+                          {chan.members.length} members
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>
 
-        {/* Chat Feed */}
         <div className="lg:col-span-8 flex flex-col justify-between bg-neutral-900">
           <div className="px-4 py-2.5 border-b border-neutral-800 bg-neutral-950 flex justify-between items-center">
             <div>
               <h4 className="text-sm font-extrabold text-white">{activeChannel?.name}</h4>
               <p className="text-[11px] text-neutral-400">{activeChannel?.description}</p>
             </div>
-            {activeChannel?.type !== 'discussion' && activeChannel?.members && (
+            {activeChannel?.type === 'group' && activeChannel?.members && (
               <span className="text-[11px] text-emerald-400 font-bold">
-                {activeChannel.members.length} Members Active
+                {activeChannel.members.length} Members
               </span>
             )}
           </div>
 
           <div className="flex-1 p-4 overflow-y-auto space-y-3">
-            {channelMessages.map((msg) => {
-              const isMe = msg.senderHandle === currentUserHandle;
-              return (
-                <div key={msg.id} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-xs font-extrabold text-emerald-400">{msg.senderHandle}</span>
-                    <span className="text-[10px] text-neutral-500">{msg.timestamp}</span>
-                  </div>
+            {channelMessages.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center text-center text-neutral-500 space-y-1">
+                <p className="text-xs font-bold text-neutral-300">No messages in {activeChannel?.name} yet</p>
+                <p className="text-[11px]">Start the conversation or share a prop/slip below!</p>
+              </div>
+            ) : (
+              channelMessages.map((msg) => {
+                const isMe = msg.senderHandle === currentUserHandle;
+                const avatarSrc = getAvatarForHandle(msg.senderHandle);
+                return (
+                  <div key={msg.id} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <img
+                        src={avatarSrc}
+                        alt={msg.senderHandle}
+                        onError={(e) => {
+                          e.currentTarget.src = getAvatarForHandle(msg.senderHandle);
+                        }}
+                        className="w-5 h-5 rounded-full object-cover border border-emerald-500/60"
+                      />
+                      <span className="text-xs font-extrabold text-emerald-400">{msg.senderHandle}</span>
+                      <span className="text-[10px] text-neutral-500">{formatLocalMessageTime(msg)}</span>
+                    </div>
 
-                  <div
-                    className={`max-w-md rounded-2xl p-3.5 space-y-2 border ${
-                      isMe
-                        ? 'bg-emerald-950/40 border-emerald-800/70 text-white'
-                        : 'bg-neutral-950 border-neutral-800 text-neutral-100'
-                    }`}
-                  >
-                    {msg.text && <p className="text-xs leading-relaxed">{msg.text}</p>}
+                    <div
+                      className={`max-w-md rounded-2xl p-3.5 space-y-2 border ${
+                        isMe
+                          ? 'bg-emerald-950/40 border-emerald-800/70 text-white'
+                          : 'bg-neutral-950 border-neutral-800 text-neutral-100'
+                      }`}
+                    >
+                      {msg.text && <p className="text-xs leading-relaxed">{msg.text}</p>}
 
-                    {msg.sharedProp && (
-                      <div className="bg-neutral-900 border border-neutral-700 rounded-xl p-3 space-y-1.5">
-                        <span className="text-[9px] font-extrabold uppercase text-neutral-400">
-                          {msg.sharedProp.sport} • {msg.sharedProp.matchup}
-                        </span>
-                        <p className="text-xs font-extrabold text-white">
-                          {msg.sharedProp.player} —{' '}
-                          <span className="text-emerald-400">
-                            {msg.sharedProp.recommendedPick} {msg.sharedProp.line} {msg.sharedProp.market}
+                      {msg.sharedProp && (
+                        <div className="bg-neutral-900 border border-neutral-700 rounded-xl p-3 space-y-1.5">
+                          <span className="text-[9px] font-extrabold uppercase text-neutral-400">
+                            {msg.sharedProp.sport} • {msg.sharedProp.matchup}
                           </span>
-                        </p>
-                        <button
-                          onClick={() => onInspectProp(msg.sharedProp!.id)}
-                          className="text-[10px] text-emerald-400 font-bold underline cursor-pointer"
-                        >
-                          Inspect Prop →
-                        </button>
-                      </div>
-                    )}
-
-                    {msg.sharedSlip && (
-                      <div className="bg-neutral-900 border border-emerald-700/60 rounded-xl p-3 space-y-2">
-                        <div className="flex justify-between items-center border-b border-neutral-800 pb-1.5">
-                          <span className="text-[9px] font-extrabold uppercase px-2 py-0.5 bg-emerald-600 text-white rounded">
-                            {msg.sharedSlip.platform} SLIP
-                          </span>
-                          <span className="text-xs font-extrabold text-emerald-400">
-                            ${msg.sharedSlip.entryAmount} → ${msg.sharedSlip.potentialPayout}
-                          </span>
+                          <p className="text-xs font-extrabold text-white">
+                            {msg.sharedProp.player} —{' '}
+                            <span className="text-emerald-400">
+                              {msg.sharedProp.recommendedPick} {msg.sharedProp.line} {msg.sharedProp.market}
+                            </span>
+                          </p>
+                          <button
+                            onClick={() => onInspectProp(msg.sharedProp!.id)}
+                            className="text-[10px] text-emerald-400 font-bold underline cursor-pointer"
+                          >
+                            Inspect Prop →
+                          </button>
                         </div>
-                        <div className="space-y-1">
-                          {msg.sharedSlip.picks.map((p) => (
-                            <div key={p.id} className="flex justify-between text-[11px] bg-neutral-950 px-2 py-1 rounded">
-                              <span className="text-white font-bold">{p.player}</span>
-                              <span className="text-emerald-400 font-bold">
-                                {p.recommendedPick} {p.line} {p.market}
-                              </span>
-                            </div>
-                          ))}
+                      )}
+
+                      {msg.sharedSlip && (
+                        <div className="bg-neutral-900 border border-emerald-700/60 rounded-xl p-3 space-y-2">
+                          <div className="flex justify-between items-center border-b border-neutral-800 pb-1.5">
+                            <span className="text-[9px] font-extrabold uppercase px-2 py-0.5 bg-emerald-600 text-white rounded">
+                              {msg.sharedSlip.platform} SLIP
+                            </span>
+                            <span className="text-xs font-extrabold text-emerald-400">
+                              ${msg.sharedSlip.entryAmount} → ${msg.sharedSlip.potentialPayout}
+                            </span>
+                          </div>
+                          <div className="space-y-1">
+                            {msg.sharedSlip.picks.map((p) => (
+                              <div key={p.id} className="flex justify-between text-[11px] bg-neutral-950 px-2 py-1 rounded">
+                                <span className="text-white font-bold">{p.player}</span>
+                                <span className="text-emerald-400 font-bold">
+                                  {p.recommendedPick} {p.line} {p.market}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                          <button
+                            onClick={() => onTailSlip(msg.sharedSlip!)}
+                            className="w-full py-1 bg-emerald-600 text-white text-[11px] font-extrabold rounded-lg cursor-pointer"
+                          >
+                            ⚡ Tail This Slip
+                          </button>
                         </div>
-                        <button
-                          onClick={() => onTailSlip(msg.sharedSlip!)}
-                          className="w-full py-1 bg-emerald-600 text-white text-[11px] font-extrabold rounded-lg cursor-pointer"
-                        >
-                          ⚡ Tail This Slip
-                        </button>
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
 
           <form
@@ -356,9 +416,14 @@ export default function SocialHub({
                       const lastWord = messageInput.split(/\s+/).pop() || '';
                       setMessageInput(messageInput.replace(lastWord, f));
                     }}
-                    className="block w-full text-left px-2.5 py-1 text-xs font-bold text-emerald-400 hover:bg-neutral-800 rounded-lg cursor-pointer"
+                    className="flex items-center gap-2 w-full text-left px-2.5 py-1 text-xs font-bold text-emerald-400 hover:bg-neutral-800 rounded-lg cursor-pointer"
                   >
-                    {f}
+                    <img
+                      src={getAvatarForHandle(f)}
+                      alt={f}
+                      className="w-4 h-4 rounded-full object-cover"
+                    />
+                    <span>{f}</span>
                   </button>
                 ))}
               </div>
@@ -367,7 +432,7 @@ export default function SocialHub({
               type="text"
               value={messageInput}
               onChange={(e) => setMessageInput(e.target.value)}
-              placeholder="Type message or @friend..."
+              placeholder="Type message or !friend..."
               className="flex-1 bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
             />
             <button
