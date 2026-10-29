@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { User } from 'firebase/auth';
 import { auth, signOut, formatBangUsername } from '@/lib/firebase';
 import ProfileModal from '@/components/ProfileModal';
@@ -8,6 +8,7 @@ import AuthModal from '@/components/AuthModal';
 import SlipDrawer from '@/components/SlipDrawer';
 import SocialHub from '@/components/SocialHub';
 import PasswordGate from '@/components/PasswordGate';
+import TutorialModal from '@/components/TutorialModal';
 import {
   ChatChannel,
   ChatMessage,
@@ -21,8 +22,9 @@ export default function Home() {
   const [user, setUser] = useState<User | null>(null);
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
   const [showProfileModal, setShowProfileModal] = useState<boolean>(false);
+  const [showTutorialModal, setShowTutorialModal] = useState<boolean>(false);
 
-  // Top navigation (Includes new 'live-tracker' tab)
+  // Top navigation
   const [topCategory, setTopCategory] = useState<TopCategoryType>('NBA');
 
   // Secondary filters
@@ -67,13 +69,34 @@ export default function Home() {
     signOut(auth).catch(() => {});
   }, []);
 
-  // Strict Auth Guard Helper for Slipmaker & Social Hub actions
+  // Strict Auth Guard Helper
   const requireAuth = (action: () => void) => {
     if (!user) {
       setShowAuthModal(true);
       return;
     }
     action();
+  };
+
+  // Trigger Tutorial Modal after login/signup unless user opted out
+  const handleAuthSuccess = (loggedInUser: User) => {
+    setUser(loggedInUser);
+    const handle = formatBangUsername(loggedInUser);
+    const hideGlobal = localStorage.getItem('betsmart_hide_tutorial') === 'true';
+    const hideForUser = localStorage.getItem(`betsmart_hide_tutorial_${handle}`) === 'true';
+    if (!hideGlobal && !hideForUser) {
+      setShowTutorialModal(true);
+    }
+  };
+
+  const handleCloseTutorial = (neverShowAgain: boolean) => {
+    if (neverShowAgain) {
+      localStorage.setItem('betsmart_hide_tutorial', 'true');
+      if (currentUserHandle) {
+        localStorage.setItem(`betsmart_hide_tutorial_${currentUserHandle}`, 'true');
+      }
+    }
+    setShowTutorialModal(false);
   };
 
   const fetchData = async (silent = false) => {
@@ -258,7 +281,12 @@ export default function Home() {
     setIsSlipOpen(true);
   };
 
+  // Auth-Guarded Player Prop Details Opener
   const openPropDetails = (prop: any) => {
+    if (!user) {
+      setShowAuthModal(true);
+      return;
+    }
     setSelectedPropModal(prop);
     setActiveModalTab('overview');
   };
@@ -293,11 +321,9 @@ export default function Home() {
     const allProps = data.playerProps as any[];
 
     if (topCategory === 'live-tracker') {
-      // Only started or completed games appear in the Live Stat Tracker
       return allProps.filter((p) => p.gameStatus === 'LIVE' || p.gameStatus === 'FINAL');
     }
 
-    // All other tabs strictly show PREGAME props (started games move to Live Tracker)
     const pregamePool = allProps.filter((p) => p.gameStatus === 'PREGAME');
 
     if (topCategory === 'NBA') {
@@ -319,20 +345,17 @@ export default function Home() {
     return pregamePool;
   }, [data, topCategory]);
 
-  // Dynamic Markets strictly derived from the active tab's isolated sport pool
   const availableMarkets = useMemo(() => {
     const unique = Array.from(new Set(tabPoolProps.map((p: any) => p.market))) as string[];
     return ['ALL', ...unique];
   }, [tabPoolProps]);
 
-  // Dynamic Games strictly derived from the active tab's isolated pool
   const availableGames = useMemo(() => {
     if (!data?.games) return [];
     const activeGameIds = new Set(tabPoolProps.map((p: any) => p.gameId));
     return data.games.filter((g: any) => activeGameIds.has(g.id));
   }, [data, tabPoolProps]);
 
-  // Final Filtered Props after Secondary Bar Filters (Platform, Market, Game, Search)
   const filteredProps = useMemo(() => {
     let list = [...tabPoolProps];
 
@@ -358,7 +381,46 @@ export default function Home() {
     return list.sort((a, b) => b.smartScore - a.smartScore);
   }, [tabPoolProps, activePlatform, selectedMarket, selectedGameId, searchQuery]);
 
-  // Live Stat Tracker W/L System Audit Summary
+  // =========================================================================
+  // MODAL CAROUSEL NAVIGATION (PREVIOUS / NEXT PROP)
+  // =========================================================================
+  const currentModalPropIndex = useMemo(() => {
+    if (!selectedPropModal || filteredProps.length === 0) return -1;
+    return filteredProps.findIndex((p: any) => p.id === selectedPropModal.id);
+  }, [selectedPropModal, filteredProps]);
+
+  const handlePrevProp = useCallback(
+    (e?: React.MouseEvent) => {
+      if (e) e.stopPropagation();
+      if (filteredProps.length <= 1 || currentModalPropIndex === -1) return;
+      const prevIdx = (currentModalPropIndex - 1 + filteredProps.length) % filteredProps.length;
+      setSelectedPropModal(filteredProps[prevIdx]);
+    },
+    [filteredProps, currentModalPropIndex]
+  );
+
+  const handleNextProp = useCallback(
+    (e?: React.MouseEvent) => {
+      if (e) e.stopPropagation();
+      if (filteredProps.length <= 1 || currentModalPropIndex === -1) return;
+      const nextIdx = (currentModalPropIndex + 1) % filteredProps.length;
+      setSelectedPropModal(filteredProps[nextIdx]);
+    },
+    [filteredProps, currentModalPropIndex]
+  );
+
+  // Support Left / Right Keyboard Arrows when Prop Modal is Open
+  useEffect(() => {
+    if (!selectedPropModal) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft') handlePrevProp();
+      else if (e.key === 'ArrowRight') handleNextProp();
+      else if (e.key === 'Escape') setSelectedPropModal(null);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedPropModal, handlePrevProp, handleNextProp]);
+
   const liveAuditSummary = useMemo(() => {
     if (!data?.playerProps) {
       return { totalLive: 0, wins: 0, losses: 0, onPace: 0, winRatePct: 100 };
@@ -428,8 +490,15 @@ export default function Home() {
               </button>
 
               {user ? (
-                <div className="flex items-center gap-3 bg-neutral-900 border border-neutral-800 px-3.5 py-1.5 rounded-xl">
+                <div className="flex items-center gap-2.5 bg-neutral-900 border border-neutral-800 px-3.5 py-1.5 rounded-xl">
                   <span className="text-xs font-extrabold text-emerald-400">{currentUserHandle}</span>
+                  <button
+                    onClick={() => setShowTutorialModal(true)}
+                    className="text-xs font-semibold text-neutral-300 hover:text-white bg-neutral-800 px-2 py-1 rounded-lg cursor-pointer"
+                    title="View Tutorial Guide"
+                  >
+                    ? Guide
+                  </button>
                   <button
                     onClick={() => setShowProfileModal(true)}
                     className="text-xs font-semibold text-neutral-300 hover:text-white bg-neutral-800 px-2.5 py-1 rounded-lg cursor-pointer"
@@ -442,6 +511,7 @@ export default function Home() {
                       setUser(null);
                       setIsSlipOpen(false);
                       setIsSocialWidgetOpen(false);
+                      setSelectedPropModal(null);
                     }}
                     className="text-xs font-semibold text-rose-400 cursor-pointer ml-1"
                   >
@@ -490,7 +560,6 @@ export default function Home() {
                 Live & Specials
               </span>
 
-              {/* NEW LIVE STAT TRACKER TAB */}
               <button
                 onClick={() => handleSelectTopCategory('live-tracker')}
                 className={`px-4 py-2.5 rounded-xl text-xs font-extrabold transition cursor-pointer flex items-center gap-2 ${
@@ -666,11 +735,7 @@ export default function Home() {
               Loading player props, live box-score feeds & SmartScore™ projections...
             </div>
           ) : topCategory === 'live-tracker' ? (
-            /* --------------------------------------------------------------- */
-            /* NEW VIEW: REAL-TIME LIVE STAT TRACKER & W/L ALGORITHM AUDIT     */
-            /* --------------------------------------------------------------- */
             <div className="space-y-5">
-              {/* System W/L Prediction Audit Banner */}
               <div className="bg-gradient-to-r from-neutral-900 via-neutral-900 to-emerald-950/40 border border-neutral-800 rounded-2xl p-5 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 shadow-xl">
                 <div className="space-y-1">
                   <div className="flex items-center gap-2">
@@ -712,7 +777,6 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Live Stat Cards Grid */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {filteredProps.map((prop: any) => {
                   const badge = getSmartScoreBadge(prop.smartScore);
@@ -731,7 +795,6 @@ export default function Home() {
                           : 'border-neutral-800 hover:border-neutral-700'
                       }`}
                     >
-                      {/* Top Status Bar: Game Clock & Score */}
                       <div className="flex justify-between items-center border-b border-neutral-800 pb-3">
                         <div className="flex items-center gap-2">
                           <span
@@ -762,7 +825,6 @@ export default function Home() {
                         )}
                       </div>
 
-                      {/* Player Info + SmartScore */}
                       <div className="flex justify-between items-center gap-3">
                         <div className="flex items-center gap-3">
                           <img
@@ -787,7 +849,6 @@ export default function Home() {
                         </div>
                       </div>
 
-                      {/* System Prediction vs Live Actual Box Score */}
                       <div className="grid grid-cols-2 gap-2.5">
                         <div className="bg-neutral-950 border border-neutral-800 rounded-xl p-3">
                           <p className="text-[10px] font-bold uppercase text-neutral-400">
@@ -819,7 +880,6 @@ export default function Home() {
                         </div>
                       </div>
 
-                      {/* Visual Progress Bar Toward Prop Line */}
                       <div className="space-y-1.5">
                         <div className="flex justify-between text-[11px] font-bold">
                           <span className="text-neutral-400">
@@ -869,9 +929,6 @@ export default function Home() {
               </div>
             </div>
           ) : layoutMode === 'grid' ? (
-            /* --------------------------------------------------------------- */
-            /* PRE-GAME BOARD: GRID VIEW                                       */
-            /* --------------------------------------------------------------- */
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {filteredProps.map((prop: any) => {
                 const badge = getSmartScoreBadge(prop.smartScore);
@@ -938,7 +995,6 @@ export default function Home() {
                         })}
                       </div>
 
-                      {/* Clean + Button for Slip (Auth-Guarded) */}
                       <button
                         type="button"
                         onClick={(e) => toggleSlipPick(prop, e)}
@@ -955,9 +1011,6 @@ export default function Home() {
               })}
             </div>
           ) : (
-            /* --------------------------------------------------------------- */
-            /* PRE-GAME BOARD: COMPACT VIEW                                    */
-            /* --------------------------------------------------------------- */
             <div className="bg-neutral-900 border border-neutral-800 rounded-2xl overflow-hidden shadow-xl">
               <div className="hidden md:grid md:grid-cols-12 gap-4 px-5 py-3 bg-neutral-950 border-b border-neutral-800 text-[11px] font-extrabold uppercase tracking-wider text-neutral-400">
                 <div className="col-span-4">Player, Matchup & Time</div>
@@ -1037,7 +1090,7 @@ export default function Home() {
           )}
         </div>
 
-        {/* SHARE PROP MODAL (STRICTLY FROM PROP DETAILS & AUTH GUARDED) */}
+        {/* SHARE PROP MODAL */}
         {pendingShareItem && user && (
           <div
             onClick={() => setPendingShareItem(null)}
@@ -1090,170 +1143,280 @@ export default function Home() {
           </div>
         )}
 
-        {/* MULTI-TAB PLAYER PROFILE MODAL (WITH AUTH-GUARDED SLIP & SEND PROP) */}
-        {selectedPropModal && (
+        {/* ================================================================= */}
+        {/* MULTI-TAB PLAYER PROFILE MODAL WITH LEFT/RIGHT CAROUSEL ARROWS    */}
+        {/* ================================================================= */}
+        {selectedPropModal && user && (
           <div
             onClick={() => setSelectedPropModal(null)}
             className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
           >
             <div
               onClick={(e) => e.stopPropagation()}
-              className="bg-neutral-900 border border-neutral-700 rounded-2xl max-w-xl w-full p-6 shadow-2xl space-y-5"
+              className="relative flex items-center justify-center w-full max-w-3xl"
             >
-              <div className="flex justify-between items-start border-b border-neutral-800 pb-4 gap-3">
-                <div className="flex items-center gap-3.5">
-                  <img
-                    src={selectedPropModal.playerImage}
-                    alt={selectedPropModal.player}
-                    onError={(e) => handleAvatarFallback(e, selectedPropModal.player)}
-                    className="w-16 h-16 rounded-full bg-neutral-950 border-2 border-emerald-500/60 object-cover shrink-0"
-                  />
-                  <div>
-                    <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 bg-neutral-800 text-neutral-300 rounded">
-                      {selectedPropModal.sport} • {selectedPropModal.team} ({selectedPropModal.position}) •{' '}
-                      <strong className="text-emerald-400">
-                        {selectedPropModal.gameStatus === 'PREGAME'
-                          ? selectedPropModal.startTime
-                          : `${selectedPropModal.liveClock} (${selectedPropModal.liveScore})`}
-                      </strong>
-                    </span>
-                    <h2 className="text-2xl font-extrabold text-white mt-1">{selectedPropModal.player}</h2>
-                    <p className="text-sm font-bold text-emerald-400">
-                      {selectedPropModal.recommendedPick} {selectedPropModal.line} {selectedPropModal.market}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2.5">
-                  <div className={`px-3 py-1.5 rounded-xl border text-right ${getSmartScoreBadge(selectedPropModal.smartScore).bg}`}>
-                    <p className="text-[9px] font-extrabold uppercase">SmartScore™</p>
-                    <p className="text-base font-extrabold">{getSmartScoreBadge(selectedPropModal.smartScore).dot} {selectedPropModal.smartScore}</p>
-                  </div>
-                  <button onClick={() => setSelectedPropModal(null)} className="w-8 h-8 rounded-full bg-neutral-800 hover:bg-neutral-700 text-neutral-300 flex items-center justify-center font-bold cursor-pointer">✕</button>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-3 gap-2 bg-neutral-950 p-1.5 rounded-xl border border-neutral-800">
-                <button onClick={() => setActiveModalTab('overview')} className={`py-2 px-3 rounded-lg text-xs font-extrabold transition cursor-pointer ${activeModalTab === 'overview' ? 'bg-emerald-600 text-white' : 'text-neutral-400'}`}>📊 Overview</button>
-                <button onClick={() => setActiveModalTab('rankings')} className={`py-2 px-3 rounded-lg text-xs font-extrabold transition cursor-pointer ${activeModalTab === 'rankings' ? 'bg-emerald-600 text-white' : 'text-neutral-400'}`}>🏆 Rankings</button>
-                <button onClick={() => setActiveModalTab('metrics')} className={`py-2 px-3 rounded-lg text-xs font-extrabold transition cursor-pointer ${activeModalTab === 'metrics' ? 'bg-emerald-600 text-white' : 'text-neutral-400'}`}>⚡ Advanced</button>
-              </div>
-
-              {activeModalTab === 'overview' && (
-                <div className="space-y-4">
-                  <div className="grid grid-cols-3 gap-3 text-center">
-                    <div className="bg-neutral-950 border border-neutral-800 p-3.5 rounded-xl">
-                      <p className="text-[10px] text-neutral-400 uppercase font-bold">Prop Line</p>
-                      <p className="text-xl font-extrabold text-white mt-1">{selectedPropModal.line}</p>
-                    </div>
-                    <div className="bg-neutral-950 border border-neutral-800 p-3.5 rounded-xl">
-                      <p className="text-[10px] text-neutral-400 uppercase font-bold">Season Avg</p>
-                      <p className="text-xl font-extrabold text-emerald-400 mt-1">{selectedPropModal.seasonAvg}</p>
-                    </div>
-                    <div className="bg-neutral-950 border border-neutral-800 p-3.5 rounded-xl">
-                      <p className="text-[10px] text-neutral-400 uppercase font-bold">Last 5 Avg</p>
-                      <p className="text-xl font-extrabold text-emerald-400 mt-1">{selectedPropModal.last5Avg}</p>
-                    </div>
-                  </div>
-
-                  <div className="bg-neutral-950 border border-neutral-800 p-4 rounded-xl space-y-2.5">
-                    <div className="flex justify-between text-xs font-extrabold">
-                      <span className="text-emerald-400">OVER: {selectedPropModal.overProbabilityPct}%</span>
-                      <span className="text-rose-400">UNDER: {selectedPropModal.underProbabilityPct}%</span>
-                    </div>
-                    <div className="w-full h-3 bg-rose-950 rounded-full overflow-hidden flex">
-                      <div style={{ width: `${selectedPropModal.overProbabilityPct}%` }} className="bg-emerald-500 h-full"></div>
-                    </div>
-                    <p className="text-xs text-neutral-300 pt-1 leading-relaxed">💡 {selectedPropModal.matchupIntel}</p>
-                  </div>
-
-                  <div>
-                    <p className="text-xs font-extrabold text-neutral-300 uppercase mb-2">Last 5 Games vs. Line ({selectedPropModal.line})</p>
-                    <div className="grid grid-cols-5 gap-2">
-                      {selectedPropModal.last5Logs?.map((val: number, idx: number) => {
-                        const hit = val > selectedPropModal.line;
-                        return (
-                          <div key={idx} className={`p-2.5 rounded-xl border text-center ${hit ? 'bg-emerald-950/50 border-emerald-700 text-emerald-300' : 'bg-rose-950/50 border-rose-800 text-rose-300'}`}>
-                            <p className="text-sm font-extrabold">{val}</p>
-                            <p className="text-[9px] font-extrabold uppercase mt-0.5">{hit ? 'HIT ✓' : 'MISS'}</p>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
+              {/* Left Side Arrow (Previous Prop) */}
+              {filteredProps.length > 1 && (
+                <button
+                  type="button"
+                  onClick={handlePrevProp}
+                  className="hidden sm:flex w-11 h-11 rounded-full bg-neutral-900/95 hover:bg-emerald-600 text-white border border-neutral-700 hover:border-emerald-400 items-center justify-center text-lg font-extrabold shadow-2xl transition cursor-pointer mr-3 shrink-0"
+                  title="Previous Prop (←)"
+                >
+                  ←
+                </button>
               )}
 
-              {activeModalTab === 'rankings' && selectedPropModal.positionalRanking && (
-                <div className="space-y-4">
-                  <div className="bg-neutral-950 border border-neutral-800 p-4 rounded-xl flex justify-between items-center">
+              {/* Modal Card */}
+              <div className="bg-neutral-900 border border-neutral-700 rounded-2xl max-w-xl w-full p-6 shadow-2xl space-y-5">
+                <div className="flex justify-between items-start border-b border-neutral-800 pb-4 gap-3">
+                  <div className="flex items-center gap-3.5">
+                    <img
+                      src={selectedPropModal.playerImage}
+                      alt={selectedPropModal.player}
+                      onError={(e) => handleAvatarFallback(e, selectedPropModal.player)}
+                      className="w-16 h-16 rounded-full bg-neutral-950 border-2 border-emerald-500/60 object-cover shrink-0"
+                    />
                     <div>
-                      <p className="text-[10px] font-extrabold uppercase text-emerald-400">{selectedPropModal.positionalRanking.positionGroup}</p>
-                      <h4 className="text-lg font-extrabold text-white mt-0.5">Ranked #{selectedPropModal.positionalRanking.offensiveRank} Offensively</h4>
-                    </div>
-                    <div className="bg-emerald-950/70 border border-emerald-700 px-3.5 py-2 rounded-xl text-center">
-                      <p className="text-[10px] text-emerald-400 font-bold uppercase">Efficiency</p>
-                      <p className="text-xl font-extrabold text-white">{selectedPropModal.positionalRanking.efficiencyGrade}</p>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 bg-neutral-800 text-neutral-300 rounded">
+                          {selectedPropModal.sport} • {selectedPropModal.team} ({selectedPropModal.position}) •{' '}
+                          <strong className="text-emerald-400">
+                            {selectedPropModal.gameStatus === 'PREGAME'
+                              ? selectedPropModal.startTime
+                              : `${selectedPropModal.liveClock} (${selectedPropModal.liveScore})`}
+                          </strong>
+                        </span>
+                        {currentModalPropIndex !== -1 && (
+                          <span className="text-[10px] font-bold text-neutral-500">
+                            {currentModalPropIndex + 1} of {filteredProps.length}
+                          </span>
+                        )}
+                      </div>
+                      <h2 className="text-2xl font-extrabold text-white mt-1">{selectedPropModal.player}</h2>
+                      <p className="text-sm font-bold text-emerald-400">
+                        {selectedPropModal.recommendedPick} {selectedPropModal.line} {selectedPropModal.market}
+                      </p>
                     </div>
                   </div>
-                  <div className="bg-neutral-950 border border-neutral-800 p-4 rounded-xl">
-                    <p className="text-xs text-neutral-300 leading-relaxed">🏅 {selectedPropModal.positionalRanking.summaryNote}</p>
-                  </div>
-                </div>
-              )}
 
-              {activeModalTab === 'metrics' && selectedPropModal.advancedMetrics && (
-                <div className="space-y-3.5">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="bg-neutral-950 border border-neutral-800 p-3.5 rounded-xl">
-                      <p className="text-[10px] text-neutral-400 uppercase font-bold">Usage / Target Share</p>
-                      <p className="text-sm font-extrabold text-white mt-1">{selectedPropModal.advancedMetrics.usageOrTargetRate}</p>
+                  <div className="flex items-center gap-2.5">
+                    <div className={`px-3 py-1.5 rounded-xl border text-right ${getSmartScoreBadge(selectedPropModal.smartScore).bg}`}>
+                      <p className="text-[9px] font-extrabold uppercase">SmartScore™</p>
+                      <p className="text-base font-extrabold">{getSmartScoreBadge(selectedPropModal.smartScore).dot} {selectedPropModal.smartScore}</p>
                     </div>
-                    <div className="bg-neutral-950 border border-neutral-800 p-3.5 rounded-xl">
-                      <p className="text-[10px] text-neutral-400 uppercase font-bold">Pace / Volume</p>
-                      <p className="text-sm font-extrabold text-emerald-400 mt-1">{selectedPropModal.advancedMetrics.paceOrSnapShare}</p>
-                    </div>
-                  </div>
-                  <div className="bg-neutral-950 border border-neutral-800 p-4 rounded-xl">
-                    <p className="text-[10px] text-emerald-400 uppercase font-extrabold mb-1">Defensive Scheme Breakdown</p>
-                    <p className="text-xs text-neutral-200 leading-relaxed">{selectedPropModal.advancedMetrics.schemeMatchupNote}</p>
-                  </div>
-                </div>
-              )}
-
-              {/* Modal Footer: Auth-Guarded Add to Slip & Send Prop */}
-              <div className="pt-3 border-t border-neutral-800 flex justify-between items-center">
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  {selectedPropModal.availablePlatforms?.map((plat: string) => (
-                    <span key={plat} className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-neutral-800 text-white">{plat}</span>
-                  ))}
-                </div>
-                <div className="flex items-center gap-2">
-                  {selectedPropModal.gameStatus === 'PREGAME' && (
                     <button
-                      onClick={(e) => toggleSlipPick(selectedPropModal, e)}
-                      className="px-3.5 py-2 bg-purple-600 hover:bg-purple-500 text-white text-xs font-extrabold rounded-xl cursor-pointer"
+                      onClick={() => setSelectedPropModal(null)}
+                      className="w-8 h-8 rounded-full bg-neutral-800 hover:bg-neutral-700 text-neutral-300 flex items-center justify-center font-bold cursor-pointer"
                     >
-                      {slipPicks.some((p) => p.id === selectedPropModal.id) ? '✓ In Slip' : '+ Add to Slip'}
+                      ✕
                     </button>
-                  )}
+                  </div>
+                </div>
+
+                {/* Mobile Next/Prev Bar (visible on small screens) */}
+                {filteredProps.length > 1 && (
+                  <div className="flex sm:hidden justify-between items-center bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-1.5">
+                    <button
+                      type="button"
+                      onClick={handlePrevProp}
+                      className="text-xs font-extrabold text-emerald-400 px-2 py-1 cursor-pointer"
+                    >
+                      ← Prev Prop
+                    </button>
+                    <span className="text-[10px] font-bold text-neutral-500">
+                      Prop {currentModalPropIndex + 1} / {filteredProps.length}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleNextProp}
+                      className="text-xs font-extrabold text-emerald-400 px-2 py-1 cursor-pointer"
+                    >
+                      Next Prop →
+                    </button>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-3 gap-2 bg-neutral-950 p-1.5 rounded-xl border border-neutral-800">
                   <button
-                    onClick={() => {
-                      const prop = selectedPropModal;
-                      if (!user) {
-                        setSelectedPropModal(null);
-                        setShowAuthModal(true);
-                        return;
-                      }
-                      setSelectedPropModal(null);
-                      setPendingShareItem({ prop });
-                    }}
-                    className="px-3.5 py-2 bg-sky-600 hover:bg-sky-500 text-white text-xs font-extrabold rounded-xl cursor-pointer"
+                    onClick={() => setActiveModalTab('overview')}
+                    className={`py-2 px-3 rounded-lg text-xs font-extrabold transition cursor-pointer ${
+                      activeModalTab === 'overview' ? 'bg-emerald-600 text-white' : 'text-neutral-400'
+                    }`}
                   >
-                    💬 Send Prop to Friend
+                    📊 Overview
+                  </button>
+                  <button
+                    onClick={() => setActiveModalTab('rankings')}
+                    className={`py-2 px-3 rounded-lg text-xs font-extrabold transition cursor-pointer ${
+                      activeModalTab === 'rankings' ? 'bg-emerald-600 text-white' : 'text-neutral-400'
+                    }`}
+                  >
+                    🏆 Rankings
+                  </button>
+                  <button
+                    onClick={() => setActiveModalTab('metrics')}
+                    className={`py-2 px-3 rounded-lg text-xs font-extrabold transition cursor-pointer ${
+                      activeModalTab === 'metrics' ? 'bg-emerald-600 text-white' : 'text-neutral-400'
+                    }`}
+                  >
+                    ⚡ Advanced
                   </button>
                 </div>
+
+                {activeModalTab === 'overview' && (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-3 gap-3 text-center">
+                      <div className="bg-neutral-950 border border-neutral-800 p-3.5 rounded-xl">
+                        <p className="text-[10px] text-neutral-400 uppercase font-bold">Prop Line</p>
+                        <p className="text-xl font-extrabold text-white mt-1">{selectedPropModal.line}</p>
+                      </div>
+                      <div className="bg-neutral-950 border border-neutral-800 p-3.5 rounded-xl">
+                        <p className="text-[10px] text-neutral-400 uppercase font-bold">Season Avg</p>
+                        <p className="text-xl font-extrabold text-emerald-400 mt-1">{selectedPropModal.seasonAvg}</p>
+                      </div>
+                      <div className="bg-neutral-950 border border-neutral-800 p-3.5 rounded-xl">
+                        <p className="text-[10px] text-neutral-400 uppercase font-bold">Last 5 Avg</p>
+                        <p className="text-xl font-extrabold text-emerald-400 mt-1">{selectedPropModal.last5Avg}</p>
+                      </div>
+                    </div>
+
+                    <div className="bg-neutral-950 border border-neutral-800 p-4 rounded-xl space-y-2.5">
+                      <div className="flex justify-between text-xs font-extrabold">
+                        <span className="text-emerald-400">OVER: {selectedPropModal.overProbabilityPct}%</span>
+                        <span className="text-rose-400">UNDER: {selectedPropModal.underProbabilityPct}%</span>
+                      </div>
+                      <div className="w-full h-3 bg-rose-950 rounded-full overflow-hidden flex">
+                        <div style={{ width: `${selectedPropModal.overProbabilityPct}%` }} className="bg-emerald-500 h-full"></div>
+                      </div>
+                      <p className="text-xs text-neutral-300 pt-1 leading-relaxed">💡 {selectedPropModal.matchupIntel}</p>
+                    </div>
+
+                    <div>
+                      <p className="text-xs font-extrabold text-neutral-300 uppercase mb-2">
+                        Last 5 Games vs. Line ({selectedPropModal.line})
+                      </p>
+                      <div className="grid grid-cols-5 gap-2">
+                        {selectedPropModal.last5Logs?.map((val: number, idx: number) => {
+                          const hit = val > selectedPropModal.line;
+                          return (
+                            <div
+                              key={idx}
+                              className={`p-2.5 rounded-xl border text-center ${
+                                hit
+                                  ? 'bg-emerald-950/50 border-emerald-700 text-emerald-300'
+                                  : 'bg-rose-950/50 border-rose-800 text-rose-300'
+                              }`}
+                            >
+                              <p className="text-sm font-extrabold">{val}</p>
+                              <p className="text-[9px] font-extrabold uppercase mt-0.5">{hit ? 'HIT ✓' : 'MISS'}</p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {activeModalTab === 'rankings' && selectedPropModal.positionalRanking && (
+                  <div className="space-y-4">
+                    <div className="bg-neutral-950 border border-neutral-800 p-4 rounded-xl flex justify-between items-center">
+                      <div>
+                        <p className="text-[10px] font-extrabold uppercase text-emerald-400">
+                          {selectedPropModal.positionalRanking.positionGroup}
+                        </p>
+                        <h4 className="text-lg font-extrabold text-white mt-0.5">
+                          Ranked #{selectedPropModal.positionalRanking.offensiveRank} Offensively
+                        </h4>
+                      </div>
+                      <div className="bg-emerald-950/70 border border-emerald-700 px-3.5 py-2 rounded-xl text-center">
+                        <p className="text-[10px] text-emerald-400 font-bold uppercase">Efficiency</p>
+                        <p className="text-xl font-extrabold text-white">
+                          {selectedPropModal.positionalRanking.efficiencyGrade}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="bg-neutral-950 border border-neutral-800 p-4 rounded-xl">
+                      <p className="text-xs text-neutral-300 leading-relaxed">
+                        🏅 {selectedPropModal.positionalRanking.summaryNote}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {activeModalTab === 'metrics' && selectedPropModal.advancedMetrics && (
+                  <div className="space-y-3.5">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="bg-neutral-950 border border-neutral-800 p-3.5 rounded-xl">
+                        <p className="text-[10px] text-neutral-400 uppercase font-bold">Usage / Target Share</p>
+                        <p className="text-sm font-extrabold text-white mt-1">
+                          {selectedPropModal.advancedMetrics.usageOrTargetRate}
+                        </p>
+                      </div>
+                      <div className="bg-neutral-950 border border-neutral-800 p-3.5 rounded-xl">
+                        <p className="text-[10px] text-neutral-400 uppercase font-bold">Pace / Volume</p>
+                        <p className="text-sm font-extrabold text-emerald-400 mt-1">
+                          {selectedPropModal.advancedMetrics.paceOrSnapShare}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="bg-neutral-950 border border-neutral-800 p-4 rounded-xl">
+                      <p className="text-[10px] text-emerald-400 uppercase font-extrabold mb-1">
+                        Defensive Scheme Breakdown
+                      </p>
+                      <p className="text-xs text-neutral-200 leading-relaxed">
+                        {selectedPropModal.advancedMetrics.schemeMatchupNote}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Modal Footer */}
+                <div className="pt-3 border-t border-neutral-800 flex justify-between items-center flex-wrap gap-2">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {selectedPropModal.availablePlatforms?.map((plat: string) => (
+                      <span
+                        key={plat}
+                        className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-neutral-800 text-white"
+                      >
+                        {plat}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {selectedPropModal.gameStatus === 'PREGAME' && (
+                      <button
+                        onClick={(e) => toggleSlipPick(selectedPropModal, e)}
+                        className="px-3.5 py-2 bg-purple-600 hover:bg-purple-500 text-white text-xs font-extrabold rounded-xl cursor-pointer"
+                      >
+                        {slipPicks.some((p) => p.id === selectedPropModal.id) ? '✓ In Slip' : '+ Add to Slip'}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => {
+                        const prop = selectedPropModal;
+                        setSelectedPropModal(null);
+                        setPendingShareItem({ prop });
+                      }}
+                      className="px-3.5 py-2 bg-sky-600 hover:bg-sky-500 text-white text-xs font-extrabold rounded-xl cursor-pointer"
+                    >
+                      💬 Send Prop to Friend
+                    </button>
+                  </div>
+                </div>
               </div>
+
+              {/* Right Side Arrow (Next Prop) */}
+              {filteredProps.length > 1 && (
+                <button
+                  type="button"
+                  onClick={handleNextProp}
+                  className="hidden sm:flex w-11 h-11 rounded-full bg-neutral-900/95 hover:bg-emerald-600 text-white border border-neutral-700 hover:border-emerald-400 items-center justify-center text-lg font-extrabold shadow-2xl transition cursor-pointer ml-3 shrink-0"
+                  title="Next Prop (→)"
+                >
+                  →
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -1277,8 +1440,30 @@ export default function Home() {
           }}
         />
 
-        {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} onSuccess={(loggedInUser) => setUser(loggedInUser)} />}
-        {showProfileModal && user && <ProfileModal user={user} onClose={() => setShowProfileModal(false)} onUpdate={(updated) => setUser(updated)} />}
+        {/* Auth Modal */}
+        {showAuthModal && (
+          <AuthModal
+            onClose={() => setShowAuthModal(false)}
+            onSuccess={handleAuthSuccess}
+          />
+        )}
+
+        {/* Onboarding Tutorial Modal */}
+        {showTutorialModal && user && (
+          <TutorialModal
+            userHandle={currentUserHandle}
+            onClose={handleCloseTutorial}
+          />
+        )}
+
+        {/* Edit !Profile Modal */}
+        {showProfileModal && user && (
+          <ProfileModal
+            user={user}
+            onClose={() => setShowProfileModal(false)}
+            onUpdate={(updated) => setUser(updated)}
+          />
+        )}
       </main>
     </PasswordGate>
   );
