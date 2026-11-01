@@ -4,6 +4,55 @@ import { SystemAuditRow } from '@/app/api/admin/route';
 
 export const dynamic = 'force-dynamic';
 
+import fs from 'fs';
+const SLATE_CACHE_FILE = '/tmp/betsmart_slate_final_cache.json';
+
+function retainCompletedSlatePropsUntilMorning(slateDate: string, games: any[], props: any[]) {
+  let cache: { slateDate: string; games: Record<string, any>; props: Record<string, any> } = {
+    slateDate,
+    games: {},
+    props: {},
+  };
+  try {
+    if (fs.existsSync(SLATE_CACHE_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(SLATE_CACHE_FILE, 'utf8'));
+      if (parsed && parsed.slateDate === slateDate) {
+        cache = parsed;
+      }
+    }
+  } catch {}
+
+  for (const g of games) {
+    if (g && g.id && (g.status === 'LIVE' || g.status === 'FINAL')) {
+      cache.games[g.id] = g;
+    }
+  }
+  for (const p of props) {
+    if (p && p.id && (p.gameStatus === 'LIVE' || p.gameStatus === 'FINAL')) {
+      cache.props[p.id] = p;
+    }
+  }
+
+  const gameIds = new Set(games.map((g: any) => g.id));
+  for (const cachedGame of Object.values(cache.games)) {
+    if (!gameIds.has((cachedGame as any).id)) {
+      games.push(cachedGame);
+    }
+  }
+
+  const propIds = new Set(props.map((p: any) => p.id));
+  for (const cachedProp of Object.values(cache.props)) {
+    if (!propIds.has((cachedProp as any).id)) {
+      props.push(cachedProp);
+    }
+  }
+
+  try {
+    fs.writeFileSync(SLATE_CACHE_FILE, JSON.stringify(cache), 'utf8');
+  } catch {}
+}
+
+
 export interface PositionalRanking {
   positionGroup: string;
   offensiveRank: number;
@@ -74,7 +123,7 @@ const PLATFORMS_POOL = [
 function formatDateKeyEST(dateObj: Date) {
   const estStr = dateObj.toLocaleString('en-US', { timeZone: 'America/New_York' });
   const est = new Date(estStr);
-  const rollover = new Date(est.getTime() - 4 * 60 * 60 * 1000);
+  const rollover = new Date(est.getTime() - 6 * 60 * 60 * 1000);
   const y = rollover.getFullYear();
   const m = String(rollover.getMonth() + 1).padStart(2, '0');
   const d = String(rollover.getDate()).padStart(2, '0');
@@ -84,7 +133,7 @@ function formatDateKeyEST(dateObj: Date) {
       est.getDate()
     ).padStart(2, '0')}`,
     espnTomorrow: (() => {
-      const tom = new Date(est.getTime() + 24 * 60 * 60 * 1000);
+      const tom = new Date(est.getTime() + 26 * 60 * 60 * 1000);
       return `${tom.getFullYear()}${String(tom.getMonth() + 1).padStart(2, '0')}${String(
         tom.getDate()
       ).padStart(2, '0')}`;
@@ -638,11 +687,12 @@ export async function GET() {
     }
   }
 
-  return NextResponse.json({
-    status: 'success',
+  retainCompletedSlatePropsUntilMorning(slateDate, games, dynamicProps);
+    return NextResponse.json({
+      status: 'success',
     databaseConnected,
     slateDate,
-    dailyResetTime: '4:00 AM EST',
+    dailyResetTime: '6:00 AM EST',
     lastSyncedIso: new Date().toISOString(),
     games,
     playerProps: dynamicProps,
